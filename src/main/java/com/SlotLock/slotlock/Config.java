@@ -1,4 +1,4 @@
-package com.myname.mymodid;
+package com.SlotLock.slotlock;
 
 import java.io.File;
 

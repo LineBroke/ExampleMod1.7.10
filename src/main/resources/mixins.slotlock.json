@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.7.11",
+  "package": "com.SlotLock.slotlock.mixin",
+  "refmap": "mixins.slotlock.refmap.json",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "MixinInventoryPlayer"
+  ],
+  "client": [
+    "MixinGuiContainer",
+    "MixinGuiContainerCreative",
+    "MixinEntityPlayer"
+  ],
+  "server": []
+}
