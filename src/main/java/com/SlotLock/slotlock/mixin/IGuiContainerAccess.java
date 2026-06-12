@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock.mixin;
+package com.slotlock.slotlock.mixin;
 
 import net.minecraft.client.gui.inventory.GuiContainer;
 

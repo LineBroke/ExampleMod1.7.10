@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock;
+package com.slotlock.slotlock;
 
 import java.io.BufferedReader;
 import java.io.File;

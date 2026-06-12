@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock.mixin;
+package com.slotlock.slotlock.mixin;
 
 import net.minecraft.client.gui.inventory.GuiContainerCreative;
 import net.minecraft.inventory.Slot;
@@ -10,8 +10,8 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import com.SlotLock.slotlock.ClientProxy;
-import com.SlotLock.slotlock.SlotLockManager;
+import com.slotlock.slotlock.ClientProxy;
+import com.slotlock.slotlock.SlotLockManager;
 
 @Mixin(GuiContainerCreative.class)
 public abstract class MixinGuiContainerCreative {

@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock.mixin;
+package com.slotlock.slotlock.mixin;
 
 import net.minecraft.entity.item.EntityItem;
 import net.minecraft.entity.player.EntityPlayer;
@@ -10,7 +10,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import com.SlotLock.slotlock.SlotLockManager;
+import com.slotlock.slotlock.SlotLockManager;
 
 @Mixin(EntityPlayer.class)
 public abstract class MixinEntityPlayer {

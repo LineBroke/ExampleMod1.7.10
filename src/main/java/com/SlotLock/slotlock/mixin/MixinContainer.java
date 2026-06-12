@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock.mixin;
+package com.slotlock.slotlock.mixin;
 
 import java.util.List;
 
@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
-import com.SlotLock.slotlock.SlotLockManager;
+import com.slotlock.slotlock.SlotLockManager;
 
 @Mixin(Container.class)
 public abstract class MixinContainer {

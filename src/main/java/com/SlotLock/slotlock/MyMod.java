@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock;
+package com.slotlock.slotlock;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;

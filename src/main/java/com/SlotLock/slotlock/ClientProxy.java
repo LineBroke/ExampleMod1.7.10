@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock;
+package com.slotlock.slotlock;
 
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraftforge.common.MinecraftForge;

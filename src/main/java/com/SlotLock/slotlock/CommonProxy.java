@@ -1,4 +1,4 @@
-package com.SlotLock.slotlock;
+package com.slotlock.slotlock;
 
 import cpw.mods.fml.common.event.FMLInitializationEvent;
 import cpw.mods.fml.common.event.FMLPostInitializationEvent;
