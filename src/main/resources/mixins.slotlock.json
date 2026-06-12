@@ -6,7 +6,9 @@
   "compatibilityLevel": "JAVA_8",
   "mixins": [
     "MixinInventoryPlayer",
-    "MixinContainer"
+    "MixinContainer",
+    "MixinAEBaseContainer",
+    "MixinAEAdaptorPlayerInventory"
   ],
   "client": [
     "MixinGuiContainer",
@@ -16,9 +18,9 @@
     "MixinGuiIngame",
     "MixinNEIClientUtils",
     "MixinBogoSorterSortHandler",
-    "MixinBogoSorterShortcutHandler",
     "MixinMouseTweaksClickHandler",
-    "MixinMouseTweaksWheelHandler"
+    "MixinMouseTweaksWheelHandler",
+    "MixinBogoSorterShortcutHandler"
   ],
   "server": []
 }

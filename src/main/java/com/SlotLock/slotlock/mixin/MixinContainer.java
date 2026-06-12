@@ -85,28 +85,30 @@ public abstract class MixinContainer {
     };
 
     /**
-     * Protect locked slots at Container.slotClick level.
+     * Container.slotClick 层的兜底保护。
      *
-     * Mouse Tweaks can bypass GuiContainer.handleMouseClick and trigger quick moves directly.
-     * So we must also protect locked slots here.
+     * 注意：
+     * 这里不要拦截 clickType == 0 && mouseButton == 0。
      *
-     * Important:
-     * Do NOT block mode == 0 here.
-     * SlotLockAutoMover uses normal left-click windowClick to move unexpected items
-     * out of empty locked slots.
+     * 因为 SlotLockAutoMover 需要用普通左键 windowClick
+     * 把异常进入空锁定槽的物品搬出去。
+     *
+     * 但是可以安全拦截普通右键：
+     * clickType == 0 && mouseButton == 1
+     *
+     * 这样可以防止：
+     * - 拿着堆叠物品右键锁定槽，偶尔放入 1 个物品
+     * - MouseTweaks / AE2 GUI 偶尔绕过客户端拦截后，服务端仍然写入锁定槽
      */
     @Inject(method = "slotClick", at = @At("HEAD"), cancellable = true)
-    private void slotlock$preventLockedSlotQuickActions(int slotId, int mouseButton, int clickType, EntityPlayer player,
+    private void slotlock$preventLockedSlotActions(int slotId, int mouseButton, int clickType, EntityPlayer player,
         CallbackInfoReturnable<ItemStack> cir) {
         if (!SlotLockManager.hasAnyLock()) {
             return;
         }
 
         /*
-         * Number-key swap:
-         * clickType == 2
-         * mouseButton 0-8 means hotbar slot 0-8.
-         * If the target hotbar slot is locked, block the swap.
+         * 数字键换位到锁定 hotbar：禁止。
          */
         if (clickType == 2 && mouseButton >= 0 && mouseButton <= 8) {
             if (SlotLockManager.isLockedPlayerIndex(mouseButton)) {
@@ -116,8 +118,8 @@ public abstract class MixinContainer {
         }
 
         /*
-         * Double-click collect.
-         * If there is any locked slot, block it to avoid collecting from locked slots.
+         * 双击收集：
+         * 有锁定槽时禁止，避免锁定槽参与收集。
          */
         if (clickType == 6) {
             cir.setReturnValue(null);
@@ -135,14 +137,23 @@ public abstract class MixinContainer {
         }
 
         /*
-         * Block locked slot as source for quick actions.
-         * clickType meanings in 1.7.10:
+         * 关键新增：
+         * 普通右键锁定槽一律禁止。
+         * 这不会影响 AutoMover，因为 AutoMover 用的是左键：
+         * mouseButton == 0, clickType == 0
+         */
+        if (clickType == 0 && mouseButton == 1) {
+            cir.setReturnValue(null);
+            return;
+        }
+
+        /*
+         * 锁定槽不能作为快捷操作来源。
          * 1 = shift-click / quick move
          * 2 = number-key swap
          * 4 = Q drop
          * 5 = drag
          * 6 = double-click collect
-         * Mouse Tweaks shift-left-drag and wheel movement usually behave like quick move.
          */
         if (clickType == 1 || clickType == 2 || clickType == 4 || clickType == 5 || clickType == 6) {
 
