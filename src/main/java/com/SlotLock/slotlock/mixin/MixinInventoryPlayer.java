@@ -21,11 +21,17 @@ public abstract class MixinInventoryPlayer {
     public abstract int getInventoryStackLimit();
 
     /**
-     * 原版找第一个空格时，会把锁定空格也当成可用。
-     * 这里改成：只返回未锁定的空格。
+     * 自动拾取物品时，原版会找第一个空槽。
+     *
+     * 如果没有任何锁定槽，直接走原版逻辑。
+     * 如果存在锁定槽，就跳过锁定槽，只返回未锁定的空槽。
      */
     @Inject(method = "getFirstEmptyStack", at = @At("HEAD"), cancellable = true)
     private void slotlock$getFirstUnlockedEmptyStack(CallbackInfoReturnable<Integer> cir) {
+        if (!SlotLockManager.hasAnyLock()) {
+            return;
+        }
+
         for (int i = 0; i < this.mainInventory.length; i++) {
             if (SlotLockManager.isLockedPlayerIndex(i)) {
                 continue;
@@ -43,13 +49,17 @@ public abstract class MixinInventoryPlayer {
     }
 
     /**
-     * 原版捡物品时，会先找已有同类物品的格子进行叠加。
-     * 比如锁定格里有 10 个石头，地上再捡石头，原版会直接叠进去。
+     * 自动拾取物品时，原版会先尝试叠加到已有同类物品槽。
      *
-     * 这里改成：寻找可叠加格子时跳过锁定格。
+     * 如果没有任何锁定槽，直接走原版逻辑。
+     * 如果存在锁定槽，就跳过锁定槽，只允许叠加到未锁定槽。
      */
     @Inject(method = "storeItemStack", at = @At("HEAD"), cancellable = true)
     private void slotlock$storeItemStackOnlyUnlocked(ItemStack incoming, CallbackInfoReturnable<Integer> cir) {
+        if (!SlotLockManager.hasAnyLock()) {
+            return;
+        }
+
         for (int i = 0; i < this.mainInventory.length; i++) {
             if (SlotLockManager.isLockedPlayerIndex(i)) {
                 continue;
@@ -99,4 +109,5 @@ public abstract class MixinInventoryPlayer {
 
         return true;
     }
+
 }
