@@ -1,14 +1,15 @@
 package com.slotlock.slotlock;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 
 import net.minecraft.entity.player.EntityPlayer;
@@ -16,119 +17,205 @@ import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 
-public class SlotLockManager {
+import cpw.mods.fml.common.Loader;
 
-    /**
-     * InventoryPlayer index:
-     * 0-8 = hotbar
-     * 9-35 = main inventory
-     */
+public final class SlotLockManager {
+
     private static final Set<Integer> LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
-
-    /**
-     * 记录“锁定瞬间是空的槽”。
-     *
-     * 用途：
-     * 如果一个槽被锁定时是空的，后来 NEI / 服务器 / 其他逻辑把物品塞进去，
-     * SlotLockAutoMover 就可以把它搬走。
-     *
-     * 注意：
-     * 这个集合不保存到配置文件。
-     * 它只表示本次游戏运行中“锁定瞬间”的状态。
-     */
     private static final Set<Integer> EMPTY_WHEN_LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
 
+    private static final long SAVE_DELAY_MS = 500L;
+
     private static File saveFile;
-    private static String lastSavedText = "";
-
-    /**
-     * Delayed save:
-     * Lock/unlock only marks dirty.
-     * Actual file write happens after SAVE_DELAY_MS without further changes.
-     */
     private static boolean dirty = false;
-    private static long lastChangeTime = 0L;
-    private static final long SAVE_DELAY_MS = 2000L;
+    private static long dirtyTime = 0L;
 
-    /**
-     * Creative inventory wraps player slots inside GuiContainerCreative.CreativeSlot.
-     * We cache the wrapped Slot field so we do not reflect-scan every time.
-     */
-    private static Field cachedCreativeSlotField = null;
-    private static boolean hasSearchedCreativeSlotField = false;
+    private SlotLockManager() {}
 
     public static void setSaveFile(File configDir) {
-        File slotLockDir = new File(configDir, "slotlock");
-        saveFile = new File(slotLockDir, "locked_slots.cfg");
+        File slotlockDir = new File(configDir, "slotlock");
+
+        if (!slotlockDir.exists()) {
+            slotlockDir.mkdirs();
+        }
+
+        saveFile = new File(slotlockDir, "locked_slots.cfg");
 
         MyMod.LOG.info("SlotLock save file: " + saveFile.getAbsolutePath());
 
         load();
     }
 
-    public static Slot unwrapSlot(Slot slot) {
-        if (slot == null) {
-            return null;
-        }
+    public static void load() {
+        LOCKED_PLAYER_SLOTS.clear();
+        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.clear();
 
-        if (slot.getClass()
-            .getName()
-            .equals("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot")) {
+        if (saveFile == null) {
+            File configDir = new File(
+                Loader.instance()
+                    .getConfigDir(),
+                "slotlock");
 
-            // Search the wrapped Slot field only once.
-            if (!hasSearchedCreativeSlotField) {
-                Field[] fields = slot.getClass()
-                    .getDeclaredFields();
-
-                for (Field field : fields) {
-                    try {
-                        if (Slot.class.isAssignableFrom(field.getType())) {
-                            field.setAccessible(true);
-                            cachedCreativeSlotField = field;
-                            break;
-                        }
-                    } catch (Exception ignored) {}
-                }
-
-                hasSearchedCreativeSlotField = true;
+            if (!configDir.exists()) {
+                configDir.mkdirs();
             }
 
-            // If we found the wrapped Slot field, read it directly.
-            if (cachedCreativeSlotField != null) {
-                try {
-                    Object value = cachedCreativeSlotField.get(slot);
+            saveFile = new File(configDir, "locked_slots.cfg");
+        }
 
-                    if (value instanceof Slot) {
-                        return (Slot) value;
+        if (!saveFile.exists()) {
+            MyMod.LOG.info("SlotLock load skipped: file does not exist yet");
+            dirty = false;
+            return;
+        }
+
+        Properties properties = new Properties();
+        FileInputStream inputStream = null;
+
+        try {
+            inputStream = new FileInputStream(saveFile);
+            properties.load(inputStream);
+
+            String lockedSlots = properties.getProperty("lockedSlots", "");
+
+            if (lockedSlots != null && lockedSlots.trim()
+                .length() > 0) {
+                String[] parts = lockedSlots.split(",");
+
+                for (String part : parts) {
+                    String trimmed = part.trim();
+
+                    if (trimmed.length() == 0) {
+                        continue;
                     }
+
+                    try {
+                        int index = Integer.parseInt(trimmed);
+
+                        if (index >= 0 && index <= 35) {
+                            LOCKED_PLAYER_SLOTS.add(index);
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            MyMod.LOG.warn("SlotLock failed to load locked slots: " + e);
+        } finally {
+            if (inputStream != null) {
+                try {
+                    inputStream.close();
                 } catch (Exception ignored) {}
             }
         }
 
-        return slot;
+        dirty = false;
+
+        MyMod.LOG.info("SlotLock loaded slots: " + getSortedLockedSlotsForLog());
     }
 
-    public static boolean isPlayerInventorySlot(Slot slot) {
-        Slot realSlot = unwrapSlot(slot);
+    public static void saveIfDirtyAfterDelay() {
+        if (!dirty) {
+            return;
+        }
 
-        if (realSlot == null) {
+        if (System.currentTimeMillis() - dirtyTime >= SAVE_DELAY_MS) {
+            saveNow();
+        }
+    }
+
+    public static void saveNow() {
+        if (!dirty) {
+            return;
+        }
+
+        if (saveFile == null) {
+            MyMod.LOG.warn("SlotLock saveNow skipped: saveFile is null");
+            return;
+        }
+
+        if (writeSaveFile()) {
+            dirty = false;
+        }
+    }
+
+    private static boolean writeSaveFile() {
+        File parent = saveFile.getParentFile();
+
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+
+        Properties properties = new Properties();
+
+        List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
+        Collections.sort(sorted);
+
+        StringBuilder builder = new StringBuilder();
+
+        boolean first = true;
+
+        for (Integer index : sorted) {
+            if (!first) {
+                builder.append(",");
+            }
+
+            builder.append(index.intValue());
+            first = false;
+        }
+
+        properties.setProperty("lockedSlots", builder.toString());
+
+        FileOutputStream outputStream = null;
+
+        try {
+            outputStream = new FileOutputStream(saveFile);
+            properties.store(outputStream, "SlotLock locked player inventory slots");
+
+            MyMod.LOG.info("SlotLock saved slots: " + sorted);
+
+            return true;
+        } catch (Exception e) {
+            MyMod.LOG.warn("SlotLock failed to save locked slots: " + e);
+            return false;
+        } finally {
+            if (outputStream != null) {
+                try {
+                    outputStream.close();
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static void markDirty() {
+        dirty = true;
+        dirtyTime = System.currentTimeMillis();
+    }
+
+    public static boolean hasAnyLock() {
+        return !LOCKED_PLAYER_SLOTS.isEmpty();
+    }
+
+    public static Set<Integer> getLockedSlots() {
+        return Collections.unmodifiableSet(LOCKED_PLAYER_SLOTS);
+    }
+
+    public static boolean isLocked(Slot slot) {
+        int playerIndex = getPlayerSlotIndex(slot);
+
+        if (playerIndex < 0 || playerIndex > 35) {
             return false;
         }
 
-        int index = realSlot.getSlotIndex();
+        return isLockedPlayerIndex(playerIndex);
+    }
 
-        if (realSlot.inventory instanceof InventoryPlayer) {
-            return index >= 0 && index <= 35;
-        }
+    public static boolean isLockedPlayerIndex(int index) {
+        return LOCKED_PLAYER_SLOTS.contains(index);
+    }
 
-        String className = slot.getClass()
-            .getName();
-
-        if (className.equals("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot")) {
-            return index >= 0 && index <= 35;
-        }
-
-        return false;
+    public static boolean isPlayerInventorySlot(Slot slot) {
+        int index = getPlayerSlotIndex(slot);
+        return index >= 0 && index <= 35;
     }
 
     public static int getPlayerSlotIndex(Slot slot) {
@@ -138,19 +225,29 @@ public class SlotLockManager {
             return -1;
         }
 
-        return realSlot.getSlotIndex();
-    }
+        int index = realSlot.getSlotIndex();
 
-    public static boolean isLocked(Slot slot) {
-        if (!isPlayerInventorySlot(slot)) {
-            return false;
+        /*
+         * Normal vanilla / normal GuiContainer player inventory slot.
+         */
+        if (realSlot.inventory instanceof InventoryPlayer) {
+            if (index >= 0 && index <= 35) {
+                return index;
+            }
+
+            return -1;
         }
 
-        return isLockedPlayerIndex(getPlayerSlotIndex(slot));
-    }
+        /*
+         * ModularUI / ModularUI2 / GT machine GUI player inventory slot.
+         */
+        int modularIndex = getModularUIPlayerSlotIndex(realSlot);
 
-    public static boolean isLockedPlayerIndex(int index) {
-        return LOCKED_PLAYER_SLOTS.contains(Integer.valueOf(index));
+        if (modularIndex >= 0 && modularIndex <= 35) {
+            return modularIndex;
+        }
+
+        return -1;
     }
 
     public static boolean isCurrentHotbarSlotLocked(EntityPlayer player) {
@@ -158,366 +255,453 @@ public class SlotLockManager {
             return false;
         }
 
-        return isLockedPlayerIndex(player.inventory.currentItem);
+        int current = player.inventory.currentItem;
+
+        if (current < 0 || current > 8) {
+            return false;
+        }
+
+        return isLockedPlayerIndex(current);
     }
 
-    /**
-     * GUI 中锁定 / 解锁槽位时使用这个方法。
-     *
-     * 这里能拿到 Slot，所以可以判断锁定瞬间这个槽是否为空。
-     */
     public static void toggle(Slot slot) {
-        if (!isPlayerInventorySlot(slot)) {
+        int playerIndex = getPlayerSlotIndex(slot);
+
+        if (playerIndex < 0 || playerIndex > 35) {
             return;
         }
 
-        Slot realSlot = unwrapSlot(slot);
-
-        if (realSlot == null) {
-            return;
-        }
-
-        int index = realSlot.getSlotIndex();
-
-        if (index < 0 || index > 35) {
-            return;
-        }
-
-        Integer key = Integer.valueOf(index);
-
-        if (LOCKED_PLAYER_SLOTS.contains(key)) {
-            LOCKED_PLAYER_SLOTS.remove(key);
-            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+        if (LOCKED_PLAYER_SLOTS.contains(playerIndex)) {
+            LOCKED_PLAYER_SLOTS.remove(playerIndex);
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(playerIndex);
         } else {
-            LOCKED_PLAYER_SLOTS.add(key);
+            LOCKED_PLAYER_SLOTS.add(playerIndex);
 
-            ItemStack stack = realSlot.getStack();
+            ItemStack stack = slot.getStack();
 
             if (stack == null) {
-                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(key);
+                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(playerIndex);
             } else {
-                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(playerIndex);
             }
         }
 
         markDirty();
     }
 
-    /**
-     * 没有 Slot 对象时才用这个方法。
-     *
-     * 注意：
-     * 这个方法不知道该槽当前是否为空，
-     * 所以默认不记录 EMPTY_WHEN_LOCKED。
-     */
     public static void togglePlayerIndex(int index) {
         if (index < 0 || index > 35) {
             return;
         }
 
-        Integer key = Integer.valueOf(index);
-
-        if (LOCKED_PLAYER_SLOTS.contains(key)) {
-            LOCKED_PLAYER_SLOTS.remove(key);
-            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+        if (LOCKED_PLAYER_SLOTS.contains(index)) {
+            LOCKED_PLAYER_SLOTS.remove(index);
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(index);
         } else {
-            LOCKED_PLAYER_SLOTS.add(key);
-            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+            LOCKED_PLAYER_SLOTS.add(index);
         }
 
         markDirty();
     }
 
-    /**
-     * AutoMover 用：
-     * 判断某个槽是否是在“空的时候被锁定”的。
-     */
     public static boolean wasEmptyWhenLocked(int playerIndex) {
-        return EMPTY_WHEN_LOCKED_PLAYER_SLOTS.contains(Integer.valueOf(playerIndex));
+        return EMPTY_WHEN_LOCKED_PLAYER_SLOTS.contains(playerIndex);
     }
 
-    /**
-     * AutoMover 用：
-     * 如果它在运行时看到一个已锁定槽确实是空的，
-     * 可以把它标记为“空锁定槽”。
-     *
-     * 这可以补充处理从配置文件加载出来的锁定槽。
-     */
     public static void markEmptyWhenLocked(int playerIndex) {
         if (playerIndex < 0 || playerIndex > 35) {
             return;
         }
 
-        if (!isLockedPlayerIndex(playerIndex)) {
-            return;
+        if (LOCKED_PLAYER_SLOTS.contains(playerIndex)) {
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(playerIndex);
         }
-
-        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(Integer.valueOf(playerIndex));
     }
 
     public static void forgetEmptyWhenLocked(int playerIndex) {
-        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(Integer.valueOf(playerIndex));
+        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(playerIndex);
     }
 
-    public static boolean hasAnyLock() {
-        return !LOCKED_PLAYER_SLOTS.isEmpty();
-    }
-
-    public static Set<Integer> getLockedSlots() {
-        return LOCKED_PLAYER_SLOTS;
-    }
-
-    public static void markDirty() {
-        dirty = true;
-        lastChangeTime = System.currentTimeMillis();
-
-        MyMod.LOG.info("SlotLock marked dirty");
-    }
-
-    public static void saveIfDirtyAfterDelay() {
-        if (!dirty) {
-            return;
+    private static Slot unwrapSlot(Slot slot) {
+        if (slot == null) {
+            return null;
         }
 
-        long now = System.currentTimeMillis();
-
-        if (now - lastChangeTime < SAVE_DELAY_MS) {
-            return;
-        }
-
-        MyMod.LOG.info("SlotLock delayed save triggered");
-
-        saveNow();
-    }
-
-    public static void saveNow() {
-        if (!dirty) {
-            return;
-        }
-
-        MyMod.LOG.info("SlotLock saveNow called");
-
-        dirty = false;
-        save();
-    }
-
-    public static void load() {
-        LOCKED_PLAYER_SLOTS.clear();
-        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.clear();
-        dirty = false;
-
-        if (saveFile == null) {
-            MyMod.LOG.warn("SlotLock load skipped: saveFile is null");
-            return;
-        }
-
-        if (!saveFile.exists()) {
-            MyMod.LOG.info("SlotLock load skipped: file does not exist yet");
-            lastSavedText = buildConfigText();
-            return;
-        }
-
-        BufferedReader reader = null;
-
+        /*
+         * Creative inventory wraps real Slot in GuiContainerCreative.CreativeSlot.
+         */
         try {
-            reader = new BufferedReader(new FileReader(saveFile));
+            Class<?> creativeSlotClass = Class
+                .forName("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot");
 
-            StringBuilder fullTextBuilder = new StringBuilder();
-            String lockedSlotsText = null;
+            if (creativeSlotClass.isInstance(slot)) {
+                Field field = creativeSlotClass.getDeclaredField("slot");
+                field.setAccessible(true);
 
-            String line;
+                Object inner = field.get(slot);
 
-            while ((line = reader.readLine()) != null) {
-                fullTextBuilder.append(line)
-                    .append("\n");
-
-                String trimmed = line.trim();
-
-                if (trimmed.length() == 0) {
-                    continue;
-                }
-
-                if (trimmed.startsWith("#")) {
-                    continue;
-                }
-
-                if (trimmed.startsWith("lockedSlots=")) {
-                    lockedSlotsText = trimmed.substring("lockedSlots=".length())
-                        .trim();
-                    continue;
-                }
-
-                /*
-                 * Backward compatibility:
-                 * Old config format was just:
-                 * 0,1,2,3
-                 */
-                if (lockedSlotsText == null && looksLikeOldSlotList(trimmed)) {
-                    lockedSlotsText = trimmed;
+                if (inner instanceof Slot) {
+                    return (Slot) inner;
                 }
             }
+        } catch (Throwable ignored) {}
 
-            if (lockedSlotsText != null && lockedSlotsText.length() > 0) {
-                readSlotList(lockedSlotsText);
-            }
-
-            List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
-            Collections.sort(sorted);
-
-            MyMod.LOG.info("SlotLock loaded slots: " + sorted);
-
-            lastSavedText = buildConfigText();
-
-            /*
-             * If old format was loaded, rewrite it once into the new format.
-             * This is a rare one-time write.
-             */
-            String oldText = fullTextBuilder.toString();
-
-            if (!oldText.equals(lastSavedText)) {
-                save();
-            }
-        } catch (Exception e) {
-            MyMod.LOG.error("SlotLock load failed", e);
-        } finally {
-            if (reader != null) {
-                try {
-                    reader.close();
-                } catch (Exception ignored) {}
-            }
-        }
+        return slot;
     }
 
-    public static void save() {
-        if (saveFile == null) {
-            MyMod.LOG.warn("SlotLock save failed: saveFile is null");
-            return;
+    private static int getModularUIPlayerSlotIndex(Slot slot) {
+        /*
+         * ModularUI2 / Cleanroom ModularUI:
+         * com.cleanroommc.modularui.widgets.slot.ModularSlot
+         * extends com.cleanroommc.modularui.utils.item.SlotItemHandler.
+         * Its Slot.inventory is usually dummy InventoryBasic, so we must inspect itemHandler.
+         */
+        int modularUI2Index = getModularUI2PlayerSlotIndex(slot);
+
+        if (modularUI2Index >= 0 && modularUI2Index <= 35) {
+            return modularUI2Index;
         }
 
-        String text = buildConfigText();
+        /*
+         * Old ModularUI1:
+         * com.gtnewhorizons.modularui.api.forge.SlotItemHandler
+         */
+        int modularUI1Index = getModularUI1PlayerSlotIndex(slot);
 
-        if (text.equals(lastSavedText) && saveFile.exists()) {
-            MyMod.LOG.info("SlotLock save skipped: no changes");
-            return;
+        if (modularUI1Index >= 0 && modularUI1Index <= 35) {
+            return modularUI1Index;
         }
 
-        FileWriter writer = null;
-        File tempFile = new File(saveFile.getAbsolutePath() + ".tmp");
+        return -1;
+    }
 
+    private static int getModularUI2PlayerSlotIndex(Slot slot) {
         try {
-            if (saveFile.getParentFile() != null) {
-                saveFile.getParentFile()
-                    .mkdirs();
+            Class<?> slotItemHandlerClass = Class.forName("com.cleanroommc.modularui.utils.item.SlotItemHandler");
+
+            if (!slotItemHandlerClass.isInstance(slot)) {
+                return -1;
             }
 
-            writer = new FileWriter(tempFile);
-            writer.write(text);
-            writer.flush();
-            writer.close();
-            writer = null;
+            Object handler = invokeNoArg(slot, "getItemHandler");
 
-            if (saveFile.exists() && !saveFile.delete()) {
-                MyMod.LOG.warn("SlotLock could not delete old save file, trying direct overwrite");
-                writeDirectly(saveFile, text);
-            } else if (!tempFile.renameTo(saveFile)) {
-                MyMod.LOG.warn("SlotLock could not rename temp save file, trying direct overwrite");
-                writeDirectly(saveFile, text);
+            if (handler == null) {
+                handler = readObjectField(slot, "itemHandler");
             }
 
-            lastSavedText = text;
-
-            List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
-            Collections.sort(sorted);
-
-            MyMod.LOG.info("SlotLock saved slots: " + sorted);
-        } catch (Exception e) {
-            MyMod.LOG.error("SlotLock save failed", e);
-        } finally {
-            if (writer != null) {
-                try {
-                    writer.close();
-                } catch (Exception ignored) {}
+            if (handler == null) {
+                return -1;
             }
 
-            if (tempFile.exists()) {
-                tempFile.delete();
+            int localIndex = slot.getSlotIndex();
+            int offset = 0;
+
+            for (int depth = 0; handler != null && depth < 8; depth++) {
+                String className = handler.getClass()
+                    .getName();
+
+                if ("com.cleanroommc.modularui.utils.item.PlayerArmorInvWrapper".equals(className)) {
+                    return -1;
+                }
+
+                if ("com.cleanroommc.modularui.utils.item.PlayerMainInvWrapper".equals(className)) {
+                    int result = localIndex + offset;
+
+                    if (result >= 0 && result <= 35) {
+                        return result;
+                    }
+
+                    return -1;
+                }
+
+                if ("com.cleanroommc.modularui.utils.item.PlayerInvWrapper".equals(className)) {
+                    int result = localIndex + offset;
+
+                    if (result >= 0 && result <= 35) {
+                        return result;
+                    }
+
+                    return -1;
+                }
+
+                if ("com.cleanroommc.modularui.utils.item.InvWrapper".equals(className)) {
+                    Object inv = invokeNoArg(handler, "getInv");
+
+                    if (inv == null) {
+                        inv = invokeNoArg(handler, "getInventory");
+                    }
+
+                    if (inv == null) {
+                        inv = findInventoryPlayerInFields(handler);
+                    }
+
+                    if (inv instanceof InventoryPlayer) {
+                        int result = localIndex + offset;
+
+                        if (result >= 0 && result <= 35) {
+                            return result;
+                        }
+                    }
+
+                    return -1;
+                }
+
+                if ("com.cleanroommc.modularui.utils.item.RangedWrapper".equals(className)) {
+                    offset += readIntField(handler, "minSlot", 0);
+
+                    Object next = invokeNoArg(handler, "getCompose");
+
+                    if (next == null) {
+                        next = invokeNoArg(handler, "getComposeHandler");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "compose");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "handler");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "wrapped");
+                    }
+
+                    handler = next;
+                    continue;
+                }
+
+                return -1;
             }
-        }
+        } catch (Throwable ignored) {}
+
+        return -1;
     }
 
-    private static void readSlotList(String text) {
-        String[] parts = text.split(",");
+    private static int getModularUI1PlayerSlotIndex(Slot slot) {
+        try {
+            Class<?> slotItemHandlerClass = Class.forName("com.gtnewhorizons.modularui.api.forge.SlotItemHandler");
 
-        for (String part : parts) {
+            if (!slotItemHandlerClass.isInstance(slot)) {
+                return -1;
+            }
+
+            Object handler = invokeNoArg(slot, "getItemHandler");
+
+            if (handler == null) {
+                handler = readObjectField(slot, "itemHandler");
+            }
+
+            if (handler == null) {
+                return -1;
+            }
+
+            int localIndex = slot.getSlotIndex();
+            int offset = 0;
+
+            for (int depth = 0; handler != null && depth < 8; depth++) {
+                String className = handler.getClass()
+                    .getName();
+
+                if ("com.gtnewhorizons.modularui.api.forge.PlayerArmorInvWrapper".equals(className)) {
+                    return -1;
+                }
+
+                if ("com.gtnewhorizons.modularui.api.forge.PlayerMainInvWrapper".equals(className)) {
+                    int result = localIndex + offset;
+
+                    if (result >= 0 && result <= 35) {
+                        return result;
+                    }
+
+                    return -1;
+                }
+
+                if ("com.gtnewhorizons.modularui.api.forge.PlayerInvWrapper".equals(className)) {
+                    int result = localIndex + offset;
+
+                    if (result >= 0 && result <= 35) {
+                        return result;
+                    }
+
+                    return -1;
+                }
+
+                if ("com.gtnewhorizons.modularui.api.forge.InvWrapper".equals(className)) {
+                    Object inv = tryGetSourceInventory(handler);
+
+                    if (inv == null) {
+                        inv = invokeNoArg(handler, "getInv");
+                    }
+
+                    if (inv == null) {
+                        inv = invokeNoArg(handler, "getInventory");
+                    }
+
+                    if (inv == null) {
+                        inv = findInventoryPlayerInFields(handler);
+                    }
+
+                    if (inv instanceof InventoryPlayer) {
+                        int result = localIndex + offset;
+
+                        if (result >= 0 && result <= 35) {
+                            return result;
+                        }
+                    }
+
+                    return -1;
+                }
+
+                if ("com.gtnewhorizons.modularui.api.forge.RangedWrapper".equals(className)) {
+                    offset += readIntField(handler, "minSlot", 0);
+
+                    Object next = invokeNoArg(handler, "getCompose");
+
+                    if (next == null) {
+                        next = invokeNoArg(handler, "getComposeHandler");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "compose");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "handler");
+                    }
+
+                    if (next == null) {
+                        next = readObjectField(handler, "wrapped");
+                    }
+
+                    handler = next;
+                    continue;
+                }
+
+                return -1;
+            }
+        } catch (Throwable ignored) {}
+
+        return -1;
+    }
+
+    private static Object tryGetSourceInventory(Object handler) {
+        if (handler == null) {
+            return null;
+        }
+
+        Object result = invokeNoArg(handler, "getSourceInventory");
+
+        if (result != null) {
+            return result;
+        }
+
+        result = invokeNoArg(handler, "getInventoryPlayer");
+
+        if (result != null) {
+            return result;
+        }
+
+        return null;
+    }
+
+    private static Object invokeNoArg(Object target, String methodName) {
+        if (target == null || methodName == null) {
+            return null;
+        }
+
+        Class<?> clazz = target.getClass();
+
+        while (clazz != null) {
             try {
-                String trimmed = part.trim();
+                Method method = clazz.getDeclaredMethod(methodName);
+                method.setAccessible(true);
+                return method.invoke(target);
+            } catch (Throwable ignored) {}
 
-                if (trimmed.length() == 0) {
-                    continue;
-                }
+            try {
+                Method method = clazz.getMethod(methodName);
+                method.setAccessible(true);
+                return method.invoke(target);
+            } catch (Throwable ignored) {}
 
-                int index = Integer.parseInt(trimmed);
-
-                if (index >= 0 && index <= 35) {
-                    LOCKED_PLAYER_SLOTS.add(Integer.valueOf(index));
-                }
-            } catch (NumberFormatException ignored) {}
+            clazz = clazz.getSuperclass();
         }
+
+        return null;
     }
 
-    private static boolean looksLikeOldSlotList(String text) {
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
+    private static Object readObjectField(Object target, String fieldName) {
+        if (target == null || fieldName == null) {
+            return null;
+        }
 
-            if ((c >= '0' && c <= '9') || c == ',' || c == ' ') {
-                continue;
+        Class<?> clazz = target.getClass();
+
+        while (clazz != null) {
+            try {
+                Field field = clazz.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                return field.get(target);
+            } catch (Throwable ignored) {}
+
+            clazz = clazz.getSuperclass();
+        }
+
+        return null;
+    }
+
+    private static int readIntField(Object target, String fieldName, int fallback) {
+        if (target == null || fieldName == null) {
+            return fallback;
+        }
+
+        Class<?> clazz = target.getClass();
+
+        while (clazz != null) {
+            try {
+                Field field = clazz.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                return field.getInt(target);
+            } catch (Throwable ignored) {}
+
+            clazz = clazz.getSuperclass();
+        }
+
+        return fallback;
+    }
+
+    private static Object findInventoryPlayerInFields(Object target) {
+        if (target == null) {
+            return null;
+        }
+
+        Class<?> clazz = target.getClass();
+
+        while (clazz != null) {
+            Field[] fields = clazz.getDeclaredFields();
+
+            for (Field field : fields) {
+                try {
+                    field.setAccessible(true);
+
+                    Object value = field.get(target);
+
+                    if (value instanceof InventoryPlayer) {
+                        return value;
+                    }
+                } catch (Throwable ignored) {}
             }
 
-            return false;
+            clazz = clazz.getSuperclass();
         }
 
-        return true;
+        return null;
     }
 
-    private static String buildConfigText() {
-        StringBuilder builder = new StringBuilder();
-
-        builder.append("# SlotLock config\n");
-        builder.append("# InventoryPlayer index: 0-8 = hotbar, 9-35 = main inventory\n");
-        builder.append("# Example: lockedSlots=0,1,2,9,10\n");
-
-        builder.append("lockedSlots=");
-
+    private static List<Integer> getSortedLockedSlotsForLog() {
         List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
         Collections.sort(sorted);
-
-        boolean first = true;
-
-        for (Integer index : sorted) {
-            if (!first) {
-                builder.append(",");
-            }
-
-            builder.append(index);
-            first = false;
-        }
-
-        builder.append("\n");
-
-        return builder.toString();
-    }
-
-    private static void writeDirectly(File file, String text) throws Exception {
-        FileWriter writer = null;
-
-        try {
-            writer = new FileWriter(file);
-            writer.write(text);
-            writer.flush();
-        } finally {
-            if (writer != null) {
-                writer.close();
-            }
-        }
+        return sorted;
     }
 }

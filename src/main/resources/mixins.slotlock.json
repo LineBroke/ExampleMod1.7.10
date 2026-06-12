@@ -8,7 +8,10 @@
     "MixinInventoryPlayer",
     "MixinContainer",
     "MixinAEBaseContainer",
-    "MixinAEAdaptorPlayerInventory"
+    "MixinAEAdaptorPlayerInventory",
+    "MixinBogoSorterDropOffHandler",
+    "MixinModularUI2ModularSlot",
+    "MixinModularUI2Container"
   ],
   "client": [
     "MixinGuiContainer",
@@ -20,7 +23,8 @@
     "MixinBogoSorterSortHandler",
     "MixinMouseTweaksClickHandler",
     "MixinMouseTweaksWheelHandler",
-    "MixinBogoSorterShortcutHandler"
+    "MixinBogoSorterShortcutHandler",
+    "MixinModularUI2ItemSlot"
   ],
   "server": []
 }
