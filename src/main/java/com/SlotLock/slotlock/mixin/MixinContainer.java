@@ -2,157 +2,102 @@ package com.SlotLock.slotlock.mixin;
 
 import java.util.List;
 
+import net.minecraft.init.Blocks;
 import net.minecraft.inventory.Container;
+import net.minecraft.inventory.InventoryBasic;
 import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
 
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+import org.spongepowered.asm.mixin.injection.Redirect;
 
 import com.SlotLock.slotlock.SlotLockManager;
 
 @Mixin(Container.class)
 public abstract class MixinContainer {
 
-    @Shadow
-    public List<Slot> inventorySlots;
+    /**
+     * A full dummy stack.
+     *
+     * Important:
+     * Do NOT return null from DUMMY_LOCKED_SLOT.getStack().
+     *
+     * Vanilla 1.7.10 Container.mergeItemStack treats getStack() == null as an empty slot.
+     * If the dummy slot looks empty, vanilla may call putStack(copy) and then set the
+     * source stack size to 0, causing the shifted item to disappear.
+     *
+     * So the dummy locked slot must look occupied and full.
+     */
+    private static final ItemStack DUMMY_LOCKED_STACK = new ItemStack(Blocks.bedrock, 64, 0);
 
     /**
-     * 1.7.10 Container.mergeItemStack
+     * Fake locked slot.
      *
-     * Shift-click 会通过这个方法把物品合并进目标槽位范围。
-     * 这里重写它的逻辑，让 Shift-click 可以继续使用，
-     * 但合并时自动跳过 SlotLock 锁定的玩家背包格。
+     * This slot is returned only inside Container.mergeItemStack when vanilla tries
+     * to access a locked player inventory slot.
+     *
+     * Behavior:
+     * 1. getStack() returns a full non-null stack, so vanilla does not treat it as empty.
+     * 2. Because the dummy stack is full, vanilla will not merge into it.
+     * 3. isItemValid() returns false.
+     * 4. putStack() does nothing, just in case.
      */
-    @Inject(method = "mergeItemStack", at = @At("HEAD"), cancellable = true)
-    private void slotlock$mergeItemStackSkipLockedSlots(ItemStack stack, int startIndex, int endIndex,
-        boolean reverseDirection, CallbackInfoReturnable<Boolean> cir) {
-        boolean changed = false;
+    private static final Slot DUMMY_LOCKED_SLOT = new Slot(new InventoryBasic("slotlock_dummy", false, 1), 0, 0, 0) {
 
-        if (stack == null) {
-            cir.setReturnValue(false);
-            return;
+        @Override
+        public boolean isItemValid(ItemStack stack) {
+            return false;
         }
 
-        int index = reverseDirection ? endIndex - 1 : startIndex;
+        @Override
+        public ItemStack getStack() {
+            return DUMMY_LOCKED_STACK.copy();
+        }
 
-        /*
-         * 第一阶段：
-         * 优先把物品叠加到已有同类物品的槽位。
-         */
-        if (stack.isStackable()) {
-            while (stack.stackSize > 0 && isIndexInRange(index, startIndex, endIndex, reverseDirection)) {
-                Slot slot = this.inventorySlots.get(index);
+        @Override
+        public boolean getHasStack() {
+            return true;
+        }
 
-                if (!SlotLockManager.isLocked(slot)) {
-                    ItemStack slotStack = slot.getStack();
+        @Override
+        public void putStack(ItemStack stack) {}
 
-                    if (canMerge(slotStack, stack)) {
-                        int maxStackSize = Math.min(stack.getMaxStackSize(), slot.getSlotStackLimit());
-                        int mergedSize = slotStack.stackSize + stack.stackSize;
+        @Override
+        public int getSlotStackLimit() {
+            return 0;
+        }
 
-                        if (mergedSize <= maxStackSize) {
-                            stack.stackSize = 0;
-                            slotStack.stackSize = mergedSize;
-                            slot.onSlotChanged();
-                            changed = true;
-                        } else if (slotStack.stackSize < maxStackSize) {
-                            int moveAmount = maxStackSize - slotStack.stackSize;
+        @Override
+        public boolean canTakeStack(net.minecraft.entity.player.EntityPlayer player) {
+            return false;
+        }
+    };
 
-                            stack.stackSize -= moveAmount;
-                            slotStack.stackSize = maxStackSize;
-                            slot.onSlotChanged();
-                            changed = true;
-                        }
-                    }
-                }
+    /**
+     * Redirect Container.mergeItemStack's List.get(index).
+     *
+     * If vanilla tries to access a locked player inventory slot while shift-clicking,
+     * return the dummy slot instead.
+     *
+     * This lets vanilla keep its original mergeItemStack logic, but makes locked slots
+     * look like unusable full slots.
+     */
+    @Redirect(
+        method = "mergeItemStack",
+        at = @At(value = "INVOKE", target = "Ljava/util/List;get(I)Ljava/lang/Object;"))
+    private Object slotlock$redirectSlotGet(List<?> list, int index) {
+        Object obj = list.get(index);
 
-                index = nextIndex(index, reverseDirection);
+        if (obj instanceof Slot) {
+            Slot slot = (Slot) obj;
+
+            if (SlotLockManager.isLocked(slot)) {
+                return DUMMY_LOCKED_SLOT;
             }
         }
 
-        /*
-         * 第二阶段：
-         * 如果还有剩余物品，放入未锁定的空槽。
-         */
-        if (stack.stackSize > 0) {
-            index = reverseDirection ? endIndex - 1 : startIndex;
-
-            while (isIndexInRange(index, startIndex, endIndex, reverseDirection)) {
-                Slot slot = this.inventorySlots.get(index);
-
-                if (!SlotLockManager.isLocked(slot)) {
-                    ItemStack slotStack = slot.getStack();
-
-                    if (slotStack == null && slot.isItemValid(stack)) {
-                        int maxStackSize = Math.min(stack.getMaxStackSize(), slot.getSlotStackLimit());
-
-                        ItemStack copy = stack.copy();
-
-                        if (copy.stackSize > maxStackSize) {
-                            copy.stackSize = maxStackSize;
-                        }
-
-                        slot.putStack(copy);
-                        slot.onSlotChanged();
-
-                        stack.stackSize -= copy.stackSize;
-                        changed = true;
-
-                        if (stack.stackSize <= 0) {
-                            break;
-                        }
-                    }
-                }
-
-                index = nextIndex(index, reverseDirection);
-            }
-        }
-
-        cir.setReturnValue(changed);
-    }
-
-    private boolean isIndexInRange(int index, int startIndex, int endIndex, boolean reverseDirection) {
-        if (reverseDirection) {
-            return index >= startIndex;
-        }
-
-        return index < endIndex;
-    }
-
-    private int nextIndex(int index, boolean reverseDirection) {
-        if (reverseDirection) {
-            return index - 1;
-        }
-
-        return index + 1;
-    }
-
-    private boolean canMerge(ItemStack current, ItemStack incoming) {
-        if (current == null || incoming == null) {
-            return false;
-        }
-
-        if (current.getItem() != incoming.getItem()) {
-            return false;
-        }
-
-        if (!current.isStackable()) {
-            return false;
-        }
-
-        if (current.getHasSubtypes() && current.getItemDamage() != incoming.getItemDamage()) {
-            return false;
-        }
-
-        if (!ItemStack.areItemStackTagsEqual(current, incoming)) {
-            return false;
-        }
-
-        return true;
+        return obj;
     }
 
 }

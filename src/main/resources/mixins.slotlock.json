@@ -9,6 +9,7 @@
     "MixinContainer"
   ],
   "client": [
+    "IGuiContainerAccess",
     "MixinGuiContainer",
     "MixinGuiContainerCreative",
     "MixinEntityPlayer"

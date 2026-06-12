@@ -1,7 +1,5 @@
 package com.SlotLock.slotlock;
 
-import java.lang.reflect.Field;
-
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.inventory.GuiContainer;
@@ -10,33 +8,12 @@ import net.minecraftforge.client.event.GuiOpenEvent;
 import net.minecraftforge.client.event.GuiScreenEvent;
 import net.minecraftforge.client.event.RenderGameOverlayEvent;
 
+import com.SlotLock.slotlock.mixin.IGuiContainerAccess;
+
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 
 public class SlotLockOverlayHandler {
-
-    private static Field guiLeftField;
-    private static Field guiTopField;
-
-    static {
-        try {
-            guiLeftField = GuiContainer.class.getDeclaredField("guiLeft");
-            guiTopField = GuiContainer.class.getDeclaredField("guiTop");
-        } catch (Exception e) {
-            try {
-                guiLeftField = GuiContainer.class.getDeclaredField("field_147003_i");
-                guiTopField = GuiContainer.class.getDeclaredField("field_147009_r");
-            } catch (Exception ignored) {}
-        }
-
-        if (guiLeftField != null) {
-            guiLeftField.setAccessible(true);
-        }
-
-        if (guiTopField != null) {
-            guiTopField.setAccessible(true);
-        }
-    }
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
@@ -62,8 +39,8 @@ public class SlotLockOverlayHandler {
 
         GuiContainer gui = (GuiContainer) event.gui;
 
-        int guiLeft = getGuiLeft(gui);
-        int guiTop = getGuiTop(gui);
+        int guiLeft = ((IGuiContainerAccess) gui).getGuiLeft();
+        int guiTop = ((IGuiContainerAccess) gui).getGuiTop();
 
         for (Object obj : gui.inventorySlots.inventorySlots) {
             if (!(obj instanceof Slot)) {
@@ -110,22 +87,6 @@ public class SlotLockOverlayHandler {
             int y = hotbarTop + 3;
 
             drawLockBox(x, y);
-        }
-    }
-
-    private int getGuiLeft(GuiContainer gui) {
-        try {
-            return guiLeftField.getInt(gui);
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    private int getGuiTop(GuiContainer gui) {
-        try {
-            return guiTopField.getInt(gui);
-        } catch (Exception e) {
-            return 0;
         }
     }
 
