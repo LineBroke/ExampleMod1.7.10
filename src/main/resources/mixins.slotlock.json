@@ -5,7 +5,8 @@
   "refmap": "mixins.slotlock.refmap.json",
   "compatibilityLevel": "JAVA_8",
   "mixins": [
-    "MixinInventoryPlayer"
+    "MixinInventoryPlayer",
+    "MixinContainer"
   ],
   "client": [
     "MixinGuiContainer",

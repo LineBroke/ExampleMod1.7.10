@@ -25,9 +25,27 @@ public class SlotLockManager {
     private static final Set<Integer> LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
 
     private static File saveFile;
+    private static String lastSavedText = "";
+
+    /**
+     * Delayed save:
+     * Lock/unlock only marks dirty.
+     * Actual file write happens after SAVE_DELAY_MS without further changes.
+     */
+    private static boolean dirty = false;
+    private static long lastChangeTime = 0L;
+    private static final long SAVE_DELAY_MS = 2000L;
+
+    /**
+     * Creative inventory wraps player slots inside GuiContainerCreative.CreativeSlot.
+     * We cache the wrapped Slot field so we do not reflect-scan every time.
+     */
+    private static Field cachedCreativeSlotField = null;
+    private static boolean hasSearchedCreativeSlotField = false;
 
     public static void setSaveFile(File configDir) {
-        saveFile = new File(configDir, "slotlock_locked_slots.cfg");
+        File slotLockDir = new File(configDir, "slotlock");
+        saveFile = new File(slotLockDir, "locked_slots.cfg");
 
         MyMod.LOG.info("SlotLock save file: " + saveFile.getAbsolutePath());
 
@@ -39,19 +57,29 @@ public class SlotLockManager {
             return null;
         }
 
-        // Creative inventory wraps player slots inside GuiContainerCreative.CreativeSlot.
-        // We unwrap it by reflection so creative mode player inventory/hotbar can be locked too.
         if (slot.getClass()
             .getName()
             .equals("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot")) {
-            Field[] fields = slot.getClass()
-                .getDeclaredFields();
+            if (!hasSearchedCreativeSlotField) {
+                Field[] fields = slot.getClass()
+                    .getDeclaredFields();
 
-            for (Field field : fields) {
+                for (Field field : fields) {
+                    try {
+                        if (Slot.class.isAssignableFrom(field.getType())) {
+                            field.setAccessible(true);
+                            cachedCreativeSlotField = field;
+                            break;
+                        }
+                    } catch (Exception ignored) {}
+                }
+
+                hasSearchedCreativeSlotField = true;
+            }
+
+            if (cachedCreativeSlotField != null) {
                 try {
-                    field.setAccessible(true);
-
-                    Object value = field.get(slot);
+                    Object value = cachedCreativeSlotField.get(slot);
 
                     if (value instanceof Slot) {
                         return (Slot) value;
@@ -76,8 +104,6 @@ public class SlotLockManager {
             return index >= 0 && index <= 35;
         }
 
-        // CreativeSlot sometimes does not expose InventoryPlayer directly,
-        // but its wrapped player slot index is still 0-35.
         String className = slot.getClass()
             .getName();
 
@@ -137,7 +163,7 @@ public class SlotLockManager {
             LOCKED_PLAYER_SLOTS.add(index);
         }
 
-        save();
+        markDirty();
     }
 
     public static boolean hasAnyLock() {
@@ -148,8 +174,43 @@ public class SlotLockManager {
         return LOCKED_PLAYER_SLOTS;
     }
 
+    public static void markDirty() {
+        dirty = true;
+        lastChangeTime = System.currentTimeMillis();
+
+        MyMod.LOG.info("SlotLock marked dirty");
+    }
+
+    public static void saveIfDirtyAfterDelay() {
+        if (!dirty) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        if (now - lastChangeTime < SAVE_DELAY_MS) {
+            return;
+        }
+
+        MyMod.LOG.info("SlotLock delayed save triggered");
+
+        saveNow();
+    }
+
+    public static void saveNow() {
+        if (!dirty) {
+            return;
+        }
+
+        MyMod.LOG.info("SlotLock saveNow called");
+
+        dirty = false;
+        save();
+    }
+
     public static void load() {
         LOCKED_PLAYER_SLOTS.clear();
+        dirty = false;
 
         if (saveFile == null) {
             MyMod.LOG.warn("SlotLock load skipped: saveFile is null");
@@ -158,6 +219,7 @@ public class SlotLockManager {
 
         if (!saveFile.exists()) {
             MyMod.LOG.info("SlotLock load skipped: file does not exist yet");
+            lastSavedText = buildConfigText();
             return;
         }
 
@@ -166,30 +228,61 @@ public class SlotLockManager {
         try {
             reader = new BufferedReader(new FileReader(saveFile));
 
-            String line = reader.readLine();
+            StringBuilder fullTextBuilder = new StringBuilder();
+            String lockedSlotsText = null;
 
-            if (line == null || line.trim()
-                .isEmpty()) {
-                MyMod.LOG.info("SlotLock loaded empty slot list");
-                return;
+            String line;
+
+            while ((line = reader.readLine()) != null) {
+                fullTextBuilder.append(line)
+                    .append("\n");
+
+                String trimmed = line.trim();
+
+                if (trimmed.length() == 0) {
+                    continue;
+                }
+
+                if (trimmed.startsWith("#")) {
+                    continue;
+                }
+
+                if (trimmed.startsWith("lockedSlots=")) {
+                    lockedSlotsText = trimmed.substring("lockedSlots=".length())
+                        .trim();
+                    continue;
+                }
+
+                /*
+                 * Backward compatibility:
+                 * Old config format was just:
+                 * 0,1,2,3
+                 */
+                if (lockedSlotsText == null && looksLikeOldSlotList(trimmed)) {
+                    lockedSlotsText = trimmed;
+                }
             }
 
-            String[] parts = line.split(",");
-
-            for (String part : parts) {
-                try {
-                    int index = Integer.parseInt(part.trim());
-
-                    if (index >= 0 && index <= 35) {
-                        LOCKED_PLAYER_SLOTS.add(index);
-                    }
-                } catch (NumberFormatException ignored) {}
+            if (lockedSlotsText != null && lockedSlotsText.length() > 0) {
+                readSlotList(lockedSlotsText);
             }
 
             List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
             Collections.sort(sorted);
 
             MyMod.LOG.info("SlotLock loaded slots: " + sorted);
+
+            lastSavedText = buildConfigText();
+
+            /*
+             * If old format was loaded, rewrite it once into the new format.
+             * This is a rare one-time write.
+             */
+            String oldText = fullTextBuilder.toString();
+
+            if (!oldText.equals(lastSavedText)) {
+                save();
+            }
         } catch (Exception e) {
             MyMod.LOG.error("SlotLock load failed", e);
         } finally {
@@ -207,7 +300,15 @@ public class SlotLockManager {
             return;
         }
 
+        String text = buildConfigText();
+
+        if (text.equals(lastSavedText) && saveFile.exists()) {
+            MyMod.LOG.info("SlotLock save skipped: no changes");
+            return;
+        }
+
         FileWriter writer = null;
+        File tempFile = new File(saveFile.getAbsolutePath() + ".tmp");
 
         try {
             if (saveFile.getParentFile() != null) {
@@ -215,23 +316,24 @@ public class SlotLockManager {
                     .mkdirs();
             }
 
-            List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
-            Collections.sort(sorted);
+            writer = new FileWriter(tempFile);
+            writer.write(text);
+            writer.flush();
+            writer.close();
+            writer = null;
 
-            writer = new FileWriter(saveFile);
-
-            boolean first = true;
-
-            for (Integer index : sorted) {
-                if (!first) {
-                    writer.write(",");
-                }
-
-                writer.write(String.valueOf(index));
-                first = false;
+            if (saveFile.exists() && !saveFile.delete()) {
+                MyMod.LOG.warn("SlotLock could not delete old save file, trying direct overwrite");
+                writeDirectly(saveFile, text);
+            } else if (!tempFile.renameTo(saveFile)) {
+                MyMod.LOG.warn("SlotLock could not rename temp save file, trying direct overwrite");
+                writeDirectly(saveFile, text);
             }
 
-            writer.flush();
+            lastSavedText = text;
+
+            List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
+            Collections.sort(sorted);
 
             MyMod.LOG.info("SlotLock saved to: " + saveFile.getAbsolutePath());
             MyMod.LOG.info("SlotLock saved slots: " + sorted);
@@ -242,6 +344,86 @@ public class SlotLockManager {
                 try {
                     writer.close();
                 } catch (Exception ignored) {}
+            }
+
+            if (tempFile.exists()) {
+                tempFile.delete();
+            }
+        }
+    }
+
+    private static void readSlotList(String text) {
+        String[] parts = text.split(",");
+
+        for (String part : parts) {
+            try {
+                String trimmed = part.trim();
+
+                if (trimmed.length() == 0) {
+                    continue;
+                }
+
+                int index = Integer.parseInt(trimmed);
+
+                if (index >= 0 && index <= 35) {
+                    LOCKED_PLAYER_SLOTS.add(index);
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+    }
+
+    private static boolean looksLikeOldSlotList(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+
+            if ((c >= '0' && c <= '9') || c == ',' || c == ' ') {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static String buildConfigText() {
+        StringBuilder builder = new StringBuilder();
+
+        builder.append("# SlotLock config\n");
+        builder.append("# InventoryPlayer index: 0-8 = hotbar, 9-35 = main inventory\n");
+        builder.append("# Example: lockedSlots=0,1,2,9,10\n");
+
+        builder.append("lockedSlots=");
+
+        List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
+        Collections.sort(sorted);
+
+        boolean first = true;
+
+        for (Integer index : sorted) {
+            if (!first) {
+                builder.append(",");
+            }
+
+            builder.append(index);
+            first = false;
+        }
+
+        builder.append("\n");
+
+        return builder.toString();
+    }
+
+    private static void writeDirectly(File file, String text) throws Exception {
+        FileWriter writer = null;
+
+        try {
+            writer = new FileWriter(file);
+            writer.write(text);
+            writer.flush();
+        } finally {
+            if (writer != null) {
+                writer.close();
             }
         }
     }

@@ -6,10 +6,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.inventory.GuiContainer;
 import net.minecraft.inventory.Slot;
+import net.minecraftforge.client.event.GuiOpenEvent;
 import net.minecraftforge.client.event.GuiScreenEvent;
 import net.minecraftforge.client.event.RenderGameOverlayEvent;
 
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
+import cpw.mods.fml.common.gameevent.TickEvent;
 
 public class SlotLockOverlayHandler {
 
@@ -33,6 +35,22 @@ public class SlotLockOverlayHandler {
 
         if (guiTopField != null) {
             guiTopField.setAccessible(true);
+        }
+    }
+
+    @SubscribeEvent
+    public void onClientTick(TickEvent.ClientTickEvent event) {
+        if (event.phase != TickEvent.Phase.END) {
+            return;
+        }
+
+        SlotLockManager.saveIfDirtyAfterDelay();
+    }
+
+    @SubscribeEvent
+    public void onGuiOpen(GuiOpenEvent event) {
+        if (event.gui == null) {
+            SlotLockManager.saveNow();
         }
     }
 
@@ -119,4 +137,5 @@ public class SlotLockOverlayHandler {
         Gui.drawRect(x, y, x + 1, y + 16, 0xFFFFFF00);
         Gui.drawRect(x + 15, y, x + 16, y + 16, 0xFFFFFF00);
     }
+
 }
