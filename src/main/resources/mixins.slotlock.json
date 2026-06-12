@@ -13,7 +13,12 @@
     "MixinGuiContainerCreative",
     "MixinEntityPlayer",
     "MixinGuiContainerRender",
-    "MixinGuiIngame"
+    "MixinGuiIngame",
+    "MixinNEIClientUtils",
+    "MixinBogoSorterSortHandler",
+    "MixinBogoSorterShortcutHandler",
+    "MixinMouseTweaksClickHandler",
+    "MixinMouseTweaksWheelHandler"
   ],
   "server": []
 }

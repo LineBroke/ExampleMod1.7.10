@@ -14,6 +14,7 @@ import java.util.Set;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.InventoryPlayer;
 import net.minecraft.inventory.Slot;
+import net.minecraft.item.ItemStack;
 
 public class SlotLockManager {
 
@@ -23,6 +24,19 @@ public class SlotLockManager {
      * 9-35 = main inventory
      */
     private static final Set<Integer> LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
+
+    /**
+     * 记录“锁定瞬间是空的槽”。
+     *
+     * 用途：
+     * 如果一个槽被锁定时是空的，后来 NEI / 服务器 / 其他逻辑把物品塞进去，
+     * SlotLockAutoMover 就可以把它搬走。
+     *
+     * 注意：
+     * 这个集合不保存到配置文件。
+     * 它只表示本次游戏运行中“锁定瞬间”的状态。
+     */
+    private static final Set<Integer> EMPTY_WHEN_LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
 
     private static File saveFile;
     private static String lastSavedText = "";
@@ -136,7 +150,7 @@ public class SlotLockManager {
     }
 
     public static boolean isLockedPlayerIndex(int index) {
-        return LOCKED_PLAYER_SLOTS.contains(index);
+        return LOCKED_PLAYER_SLOTS.contains(Integer.valueOf(index));
     }
 
     public static boolean isCurrentHotbarSlotLocked(EntityPlayer player) {
@@ -147,26 +161,102 @@ public class SlotLockManager {
         return isLockedPlayerIndex(player.inventory.currentItem);
     }
 
+    /**
+     * GUI 中锁定 / 解锁槽位时使用这个方法。
+     *
+     * 这里能拿到 Slot，所以可以判断锁定瞬间这个槽是否为空。
+     */
     public static void toggle(Slot slot) {
         if (!isPlayerInventorySlot(slot)) {
             return;
         }
 
-        togglePlayerIndex(getPlayerSlotIndex(slot));
+        Slot realSlot = unwrapSlot(slot);
+
+        if (realSlot == null) {
+            return;
+        }
+
+        int index = realSlot.getSlotIndex();
+
+        if (index < 0 || index > 35) {
+            return;
+        }
+
+        Integer key = Integer.valueOf(index);
+
+        if (LOCKED_PLAYER_SLOTS.contains(key)) {
+            LOCKED_PLAYER_SLOTS.remove(key);
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+        } else {
+            LOCKED_PLAYER_SLOTS.add(key);
+
+            ItemStack stack = realSlot.getStack();
+
+            if (stack == null) {
+                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(key);
+            } else {
+                EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
+            }
+        }
+
+        markDirty();
     }
 
+    /**
+     * 没有 Slot 对象时才用这个方法。
+     *
+     * 注意：
+     * 这个方法不知道该槽当前是否为空，
+     * 所以默认不记录 EMPTY_WHEN_LOCKED。
+     */
     public static void togglePlayerIndex(int index) {
         if (index < 0 || index > 35) {
             return;
         }
 
-        if (LOCKED_PLAYER_SLOTS.contains(index)) {
-            LOCKED_PLAYER_SLOTS.remove(index);
+        Integer key = Integer.valueOf(index);
+
+        if (LOCKED_PLAYER_SLOTS.contains(key)) {
+            LOCKED_PLAYER_SLOTS.remove(key);
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
         } else {
-            LOCKED_PLAYER_SLOTS.add(index);
+            LOCKED_PLAYER_SLOTS.add(key);
+            EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(key);
         }
 
         markDirty();
+    }
+
+    /**
+     * AutoMover 用：
+     * 判断某个槽是否是在“空的时候被锁定”的。
+     */
+    public static boolean wasEmptyWhenLocked(int playerIndex) {
+        return EMPTY_WHEN_LOCKED_PLAYER_SLOTS.contains(Integer.valueOf(playerIndex));
+    }
+
+    /**
+     * AutoMover 用：
+     * 如果它在运行时看到一个已锁定槽确实是空的，
+     * 可以把它标记为“空锁定槽”。
+     *
+     * 这可以补充处理从配置文件加载出来的锁定槽。
+     */
+    public static void markEmptyWhenLocked(int playerIndex) {
+        if (playerIndex < 0 || playerIndex > 35) {
+            return;
+        }
+
+        if (!isLockedPlayerIndex(playerIndex)) {
+            return;
+        }
+
+        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.add(Integer.valueOf(playerIndex));
+    }
+
+    public static void forgetEmptyWhenLocked(int playerIndex) {
+        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.remove(Integer.valueOf(playerIndex));
     }
 
     public static boolean hasAnyLock() {
@@ -213,6 +303,7 @@ public class SlotLockManager {
 
     public static void load() {
         LOCKED_PLAYER_SLOTS.clear();
+        EMPTY_WHEN_LOCKED_PLAYER_SLOTS.clear();
         dirty = false;
 
         if (saveFile == null) {
@@ -338,7 +429,6 @@ public class SlotLockManager {
             List<Integer> sorted = new ArrayList<Integer>(LOCKED_PLAYER_SLOTS);
             Collections.sort(sorted);
 
-            MyMod.LOG.info("SlotLock saved to: " + saveFile.getAbsolutePath());
             MyMod.LOG.info("SlotLock saved slots: " + sorted);
         } catch (Exception e) {
             MyMod.LOG.error("SlotLock save failed", e);
@@ -369,7 +459,7 @@ public class SlotLockManager {
                 int index = Integer.parseInt(trimmed);
 
                 if (index >= 0 && index <= 35) {
-                    LOCKED_PLAYER_SLOTS.add(index);
+                    LOCKED_PLAYER_SLOTS.add(Integer.valueOf(index));
                 }
             } catch (NumberFormatException ignored) {}
         }

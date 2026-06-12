@@ -1,9 +1,5 @@
 package com.slotlock.slotlock;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.InventoryPlayer;
@@ -15,18 +11,6 @@ import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 
 public class SlotLockAutoMover {
-
-    /**
-     * 记录锁定槽在“开始观察时”的内容。
-     *
-     * key = 玩家背包 index，0-35
-     * value = 当时的 ItemStack 复制
-     *
-     * value 为 null 表示：
-     * 这个槽在开始观察时是空的。
-     * 后来如果服务器把物品塞进来，就可以尝试自动搬走。
-     */
-    private final Map<Integer, ItemStack> expectedStacks = new HashMap<Integer, ItemStack>();
 
     /**
      * 搬运状态机。
@@ -41,8 +25,21 @@ public class SlotLockAutoMover {
     private int stateTicks = 0;
 
     private int pendingWindowId = -1;
-    private int pendingSlotNumber = -1;
+
+    /*
+     * 原目标槽：
+     * 优先把物品放到这个未锁定空槽。
+     */
+    private int pendingTargetSlotNumber = -1;
     private int pendingTargetPlayerIndex = -1;
+
+    /*
+     * 来源槽：
+     * 如果目标槽失效，最后尝试把物品放回来源槽，
+     * 避免鼠标上残留一组物品。
+     */
+    private int pendingSourceSlotNumber = -1;
+    private int pendingSourcePlayerIndex = -1;
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
@@ -53,7 +50,7 @@ public class SlotLockAutoMover {
         Minecraft mc = Minecraft.getMinecraft();
 
         if (mc == null || mc.theWorld == null || mc.thePlayer == null) {
-            resetAll();
+            resetMoveState();
             return;
         }
 
@@ -62,7 +59,7 @@ public class SlotLockAutoMover {
         /*
          * 如果已经进入“拿起物品，等待放下”的状态，
          * 优先完成搬运。
-         * 不要在这里因为打开 GUI 而直接清空状态，
+         * 不要因为打开 GUI 而直接中断，
          * 否则可能出现鼠标上已经拿起物品，但是没有放下的情况。
          */
         if (state == MoveState.WAITING_TO_PLACE) {
@@ -72,10 +69,10 @@ public class SlotLockAutoMover {
 
         /*
          * 创造模式不要自动搬。
-         * 打开 GUI 时也不要启动新的自动搬运。
+         * 打开 GUI 时不要启动新的自动搬运。
          * 注意：
-         * 这里只重置搬运状态，不清空 expectedStacks。
-         * 否则打开一次背包后，锁定空槽的“原本为空”记录会丢失。
+         * NEI Cheat 给物品时通常正在打开 GUI。
+         * 所以这里不能清除 SlotLockManager 里记录的 EMPTY_WHEN_LOCKED。
          */
         if (mc.currentScreen != null || (mc.playerController != null && mc.playerController.isInCreativeMode())) {
             resetMoveState();
@@ -98,23 +95,26 @@ public class SlotLockAutoMover {
             return;
         }
 
-        syncExpectedSlots(player.inventory);
+        /*
+         * 补充记录：
+         * 如果某个锁定槽当前是空的，就把它标记为“空锁定槽”。
+         * 这个用于处理从配置文件加载出来的锁定槽。
+         */
+        markCurrentlyEmptyLockedSlots(player.inventory);
 
         for (int i = 0; i < 36; i++) {
             if (!SlotLockManager.isLockedPlayerIndex(i)) {
                 continue;
             }
 
-            ItemStack expected = expectedStacks.get(Integer.valueOf(i));
             ItemStack current = player.inventory.getStackInSlot(i);
 
             /*
              * 只处理：
-             * 锁定时为空，后来服务器把物品塞进来的情况。
-             * 如果锁定时本来就有物品，不自动搬走。
-             * 否则可能把玩家原本想保护的工具/武器搬走。
+             * 这个槽在锁定时是空的，
+             * 但现在被 NEI / 服务器 / 其他逻辑塞进了物品。
              */
-            if (expected == null && current != null) {
+            if (SlotLockManager.wasEmptyWhenLocked(i) && current != null) {
                 boolean started = startMoveLockedSlot(player, i);
 
                 if (started) {
@@ -125,29 +125,50 @@ public class SlotLockAutoMover {
     }
 
     /**
-     * 只重置搬运状态，不清空 expectedStacks。
+     * 只重置搬运状态。
      */
     private void resetMoveState() {
         state = MoveState.IDLE;
         stateTicks = 0;
 
         pendingWindowId = -1;
-        pendingSlotNumber = -1;
+
+        pendingTargetSlotNumber = -1;
         pendingTargetPlayerIndex = -1;
+
+        pendingSourceSlotNumber = -1;
+        pendingSourcePlayerIndex = -1;
     }
 
     /**
-     * 完全重置。
+     * 如果某个锁定槽当前为空，则标记为“空锁定槽”。
      *
-     * 世界为空、玩家为空、退出游戏时使用。
+     * 这样即使锁定状态是从配置文件加载的，
+     * 只要 AutoMover 曾经看到它是空的，
+     * 后面它被塞入物品时也会被搬走。
      */
-    private void resetAll() {
-        expectedStacks.clear();
-        resetMoveState();
+    private void markCurrentlyEmptyLockedSlots(InventoryPlayer inventory) {
+        for (int i = 0; i < 36; i++) {
+            if (!SlotLockManager.isLockedPlayerIndex(i)) {
+                continue;
+            }
+
+            if (inventory.getStackInSlot(i) == null) {
+                SlotLockManager.markEmptyWhenLocked(i);
+            }
+        }
     }
 
     /**
      * 处理“已经拿起物品，等待放下”的阶段。
+     *
+     * 这里的重点：
+     * AutoMover 一旦主动拿起物品，就必须尽量把它放下。
+     *
+     * 顺序：
+     * 1. 优先放到原目标槽
+     * 2. 原目标槽失效时，重新找一个未锁定空槽
+     * 3. 还是失败时，尝试放回原来源槽
      */
     private void handleWaitingToPlace(Minecraft mc, EntityPlayer player) {
         stateTicks--;
@@ -156,29 +177,93 @@ public class SlotLockAutoMover {
             return;
         }
 
-        /*
-         * 放下前再次检查：
-         * 1. 鼠标上确实有物品
-         * 2. 目标 window / slot 有效
-         * 3. 目标玩家背包 index 有效
-         * 4. 目标槽现在仍然是空的
-         * 如果目标槽这几 tick 内被服务器填了，
-         * 不强行放下，避免变成交换物品。
-         */
-        if (player.inventory.getItemStack() != null && pendingWindowId != -1
-            && pendingSlotNumber != -1
-            && pendingTargetPlayerIndex != -1
-            && player.inventory.getStackInSlot(pendingTargetPlayerIndex) == null) {
+        if (player.inventory.getItemStack() != null && pendingWindowId != -1) {
+            tryPlaceIntoOriginalTarget(mc, player);
 
-            mc.playerController.windowClick(pendingWindowId, pendingSlotNumber, 0, 0, player);
+            if (player.inventory.getItemStack() != null) {
+                tryPlaceIntoNewUnlockedEmptySlot(mc, player);
+            }
+
+            if (player.inventory.getItemStack() != null) {
+                tryPlaceBackToSource(mc, player);
+            }
         }
 
         state = MoveState.COOLDOWN;
         stateTicks = 10;
 
         pendingWindowId = -1;
-        pendingSlotNumber = -1;
+
+        pendingTargetSlotNumber = -1;
         pendingTargetPlayerIndex = -1;
+
+        pendingSourceSlotNumber = -1;
+        pendingSourcePlayerIndex = -1;
+    }
+
+    /**
+     * 尝试放到启动搬运时选中的目标槽。
+     */
+    private void tryPlaceIntoOriginalTarget(Minecraft mc, EntityPlayer player) {
+        if (pendingTargetSlotNumber == -1 || pendingTargetPlayerIndex == -1) {
+            return;
+        }
+
+        if (player.inventory.getStackInSlot(pendingTargetPlayerIndex) != null) {
+            return;
+        }
+
+        mc.playerController.windowClick(pendingWindowId, pendingTargetSlotNumber, 0, 0, player);
+    }
+
+    /**
+     * 如果原目标槽失效，重新找一个未锁定空槽。
+     */
+    private void tryPlaceIntoNewUnlockedEmptySlot(Minecraft mc, EntityPlayer player) {
+        int newTargetIndex = findUnlockedEmptySlot(player.inventory);
+
+        if (newTargetIndex < 0) {
+            return;
+        }
+
+        Container container = player.inventoryContainer;
+
+        if (container == null) {
+            return;
+        }
+
+        Slot newTargetSlot = findPlayerSlot(container, player.inventory, newTargetIndex);
+
+        if (newTargetSlot == null) {
+            return;
+        }
+
+        if (newTargetSlot.getHasStack()) {
+            return;
+        }
+
+        mc.playerController.windowClick(container.windowId, newTargetSlot.slotNumber, 0, 0, player);
+    }
+
+    /**
+     * 如果没有任何未锁定空槽可放，最后尝试放回原锁定槽。
+     *
+     * 这是为了避免鼠标上残留物品。
+     */
+    private void tryPlaceBackToSource(Minecraft mc, EntityPlayer player) {
+        if (pendingSourceSlotNumber == -1 || pendingSourcePlayerIndex == -1) {
+            return;
+        }
+
+        /*
+         * 只有来源槽现在仍然为空，才放回去。
+         * 如果来源槽已经被别的同步填了，不要交换物品。
+         */
+        if (player.inventory.getStackInSlot(pendingSourcePlayerIndex) != null) {
+            return;
+        }
+
+        mc.playerController.windowClick(pendingWindowId, pendingSourceSlotNumber, 0, 0, player);
     }
 
     /**
@@ -206,6 +291,10 @@ public class SlotLockAutoMover {
 
         Container container = player.inventoryContainer;
 
+        if (container == null) {
+            return false;
+        }
+
         Slot fromSlot = findPlayerSlot(container, player.inventory, lockedPlayerIndex);
         Slot toSlot = findPlayerSlot(container, player.inventory, targetPlayerIndex);
 
@@ -232,46 +321,17 @@ public class SlotLockAutoMover {
          * 延迟几个 tick 后，再放到未锁定空槽。
          */
         pendingWindowId = container.windowId;
-        pendingSlotNumber = toSlot.slotNumber;
+
+        pendingTargetSlotNumber = toSlot.slotNumber;
         pendingTargetPlayerIndex = targetPlayerIndex;
+
+        pendingSourceSlotNumber = fromSlot.slotNumber;
+        pendingSourcePlayerIndex = lockedPlayerIndex;
 
         state = MoveState.WAITING_TO_PLACE;
         stateTicks = 3;
 
         return true;
-    }
-
-    private void syncExpectedSlots(InventoryPlayer inventory) {
-        /*
-         * 删除已经不再锁定的槽。
-         */
-        Iterator<Integer> iterator = expectedStacks.keySet()
-            .iterator();
-
-        while (iterator.hasNext()) {
-            int index = iterator.next()
-                .intValue();
-
-            if (!SlotLockManager.isLockedPlayerIndex(index)) {
-                iterator.remove();
-            }
-        }
-
-        /*
-         * 新锁定的槽，记录当前内容。
-         */
-        for (int i = 0; i < 36; i++) {
-            if (!SlotLockManager.isLockedPlayerIndex(i)) {
-                continue;
-            }
-
-            Integer key = Integer.valueOf(i);
-
-            if (!expectedStacks.containsKey(key)) {
-                ItemStack stack = inventory.getStackInSlot(i);
-                expectedStacks.put(key, stack == null ? null : stack.copy());
-            }
-        }
     }
 
     /**
@@ -305,6 +365,10 @@ public class SlotLockAutoMover {
     }
 
     private Slot findPlayerSlot(Container container, InventoryPlayer inventory, int playerIndex) {
+        if (container == null || inventory == null) {
+            return null;
+        }
+
         for (Object object : container.inventorySlots) {
             if (!(object instanceof Slot)) {
                 continue;
