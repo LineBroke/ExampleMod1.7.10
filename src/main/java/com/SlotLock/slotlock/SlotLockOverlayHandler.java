@@ -2,18 +2,18 @@ package com.slotlock.slotlock;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
-import net.minecraft.client.gui.inventory.GuiContainer;
-import net.minecraft.inventory.Slot;
+import net.minecraft.client.renderer.Tessellator;
+import net.minecraft.util.ResourceLocation;
 import net.minecraftforge.client.event.GuiOpenEvent;
-import net.minecraftforge.client.event.GuiScreenEvent;
-import net.minecraftforge.client.event.RenderGameOverlayEvent;
 
-import com.slotlock.slotlock.mixin.IGuiContainerAccess;
+import org.lwjgl.opengl.GL11;
 
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 
 public class SlotLockOverlayHandler {
+
+    private static final ResourceLocation LOCK_ICON = new ResourceLocation("slotlock", "textures/gui/lock_icon.png");
 
     @SubscribeEvent
     public void onClientTick(TickEvent.ClientTickEvent event) {
@@ -31,72 +31,78 @@ public class SlotLockOverlayHandler {
         }
     }
 
-    @SubscribeEvent
-    public void onDrawGui(GuiScreenEvent.DrawScreenEvent.Post event) {
-        if (!(event.gui instanceof GuiContainer)) {
-            return;
-        }
+    public static void drawLockedBackground(int x, int y) {
+        GL11.glPushAttrib(
+            GL11.GL_ENABLE_BIT | GL11.GL_COLOR_BUFFER_BIT
+                | GL11.GL_CURRENT_BIT
+                | GL11.GL_DEPTH_BUFFER_BIT
+                | GL11.GL_TEXTURE_BIT);
 
-        GuiContainer gui = (GuiContainer) event.gui;
+        GL11.glPushMatrix();
 
-        int guiLeft = ((IGuiContainerAccess) gui).getGuiLeft();
-        int guiTop = ((IGuiContainerAccess) gui).getGuiTop();
+        GL11.glDisable(GL11.GL_TEXTURE_2D);
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
 
-        for (Object obj : gui.inventorySlots.inventorySlots) {
-            if (!(obj instanceof Slot)) {
-                continue;
-            }
+        GL11.glEnable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
 
-            Slot slot = (Slot) obj;
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
 
-            if (!SlotLockManager.isLocked(slot)) {
-                continue;
-            }
+        // 右边之前少 1 像素，所以这里用 x + 17
+        Gui.drawRect(x, y, x + 17, y + 16, 0x5599FF99);
 
-            int x = guiLeft + slot.xDisplayPosition;
-            int y = guiTop + slot.yDisplayPosition;
+        GL11.glPopMatrix();
+        GL11.glPopAttrib();
 
-            drawLockBox(x, y);
-        }
+        // 防止影响后面的物品、数量文字、物品名
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
     }
 
-    @SubscribeEvent
-    public void onDrawHotbar(RenderGameOverlayEvent.Post event) {
-        if (event.type != RenderGameOverlayEvent.ElementType.HOTBAR) {
-            return;
-        }
+    public static void drawLockedIcon(int slotX, int slotY) {
+        // 右上角小锁
+        drawLockIcon(slotX + 9, slotY - 1, 8, 8);
+    }
 
+    private static void drawLockIcon(int x, int y, int width, int height) {
         Minecraft mc = Minecraft.getMinecraft();
 
-        if (mc.thePlayer == null) {
-            return;
-        }
+        GL11.glPushAttrib(
+            GL11.GL_ENABLE_BIT | GL11.GL_COLOR_BUFFER_BIT
+                | GL11.GL_CURRENT_BIT
+                | GL11.GL_DEPTH_BUFFER_BIT
+                | GL11.GL_TEXTURE_BIT);
 
-        int screenWidth = event.resolution.getScaledWidth();
-        int screenHeight = event.resolution.getScaledHeight();
+        GL11.glPushMatrix();
 
-        int hotbarLeft = screenWidth / 2 - 91;
-        int hotbarTop = screenHeight - 22;
+        GL11.glDisable(GL11.GL_LIGHTING);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
 
-        for (int i = 0; i < 9; i++) {
-            if (!SlotLockManager.isLockedPlayerIndex(i)) {
-                continue;
-            }
+        GL11.glEnable(GL11.GL_TEXTURE_2D);
+        GL11.glEnable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
 
-            int x = hotbarLeft + i * 20 + 2;
-            int y = hotbarTop + 3;
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
 
-            drawLockBox(x, y);
-        }
+        mc.getTextureManager()
+            .bindTexture(LOCK_ICON);
+
+        Tessellator tessellator = Tessellator.instance;
+        tessellator.startDrawingQuads();
+
+        double z = 300.0D;
+
+        tessellator.addVertexWithUV(x, y + height, z, 0.0D, 1.0D);
+        tessellator.addVertexWithUV(x + width, y + height, z, 1.0D, 1.0D);
+        tessellator.addVertexWithUV(x + width, y, z, 1.0D, 0.0D);
+        tessellator.addVertexWithUV(x, y, z, 0.0D, 0.0D);
+
+        tessellator.draw();
+
+        GL11.glPopMatrix();
+        GL11.glPopAttrib();
+
+        // 防止锁图标影响后面的 HUD 文字
+        GL11.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
     }
-
-    private void drawLockBox(int x, int y) {
-        Gui.drawRect(x, y, x + 16, y + 16, 0x80FF0000);
-
-        Gui.drawRect(x, y, x + 16, y + 1, 0xFFFFFF00);
-        Gui.drawRect(x, y + 15, x + 16, y + 16, 0xFFFFFF00);
-        Gui.drawRect(x, y, x + 1, y + 16, 0xFFFFFF00);
-        Gui.drawRect(x + 15, y, x + 16, y + 16, 0xFFFFFF00);
-    }
-
 }

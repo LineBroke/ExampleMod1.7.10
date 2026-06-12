@@ -9,10 +9,11 @@
     "MixinContainer"
   ],
   "client": [
-    "IGuiContainerAccess",
     "MixinGuiContainer",
     "MixinGuiContainerCreative",
-    "MixinEntityPlayer"
+    "MixinEntityPlayer",
+    "MixinGuiContainerRender",
+    "MixinGuiIngame"
   ],
   "server": []
 }

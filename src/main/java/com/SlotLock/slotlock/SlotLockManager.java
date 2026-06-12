@@ -43,13 +43,6 @@ public class SlotLockManager {
     private static Field cachedCreativeSlotField = null;
     private static boolean hasSearchedCreativeSlotField = false;
 
-    /**
-     * Creative inventory wraps player slots inside GuiContainerCreative.CreativeSlot.
-     * We cache the wrapped Slot field so we do not reflect-scan every time.
-     */
-    private static Field cachedCreativeSlotField = null;
-    private static boolean hasSearchedCreativeSlotField = false;
-
     public static void setSaveFile(File configDir) {
         File slotLockDir = new File(configDir, "slotlock");
         saveFile = new File(slotLockDir, "locked_slots.cfg");
@@ -67,19 +60,12 @@ public class SlotLockManager {
         if (slot.getClass()
             .getName()
             .equals("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot")) {
-<<<<<<< Updated upstream
-            if (!hasSearchedCreativeSlotField) {
-                Field[] fields = slot.getClass()
-                    .getDeclaredFields();
-
-=======
 
             // Search the wrapped Slot field only once.
             if (!hasSearchedCreativeSlotField) {
                 Field[] fields = slot.getClass()
                     .getDeclaredFields();
 
->>>>>>> Stashed changes
                 for (Field field : fields) {
                     try {
                         if (Slot.class.isAssignableFrom(field.getType())) {
@@ -93,10 +79,7 @@ public class SlotLockManager {
                 hasSearchedCreativeSlotField = true;
             }
 
-<<<<<<< Updated upstream
-=======
             // If we found the wrapped Slot field, read it directly.
->>>>>>> Stashed changes
             if (cachedCreativeSlotField != null) {
                 try {
                     Object value = cachedCreativeSlotField.get(slot);
