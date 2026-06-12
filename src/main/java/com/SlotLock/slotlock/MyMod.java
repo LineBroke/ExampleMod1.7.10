@@ -16,7 +16,7 @@ public class MyMod {
     public static final String MODID = "slotlock";
     public static final Logger LOG = LogManager.getLogger(MODID);
 
-    @SidedProxy(clientSide = "com.SlotLock.slotlock.ClientProxy", serverSide = "com.SlotLock.slotlock.CommonProxy")
+    @SidedProxy(clientSide = "com.slotlock.slotlock.ClientProxy", serverSide = "com.slotlock.slotlock.CommonProxy")
     public static CommonProxy proxy;
 
     @Mod.EventHandler
