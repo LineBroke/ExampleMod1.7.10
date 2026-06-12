@@ -2,13 +2,15 @@ package com.slotlock.slotlock.mixin;
 
 import java.util.List;
 
-import net.minecraft.init.Blocks;
+import net.minecraft.init.Items;
 import net.minecraft.inventory.Container;
 import net.minecraft.inventory.InventoryBasic;
 import net.minecraft.inventory.Slot;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NBTTagCompound;
 
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
@@ -20,30 +22,31 @@ public abstract class MixinContainer {
     /**
      * A full dummy stack.
      *
-     * Important:
-     * Do NOT return null from DUMMY_LOCKED_SLOT.getStack().
-     *
-     * Vanilla 1.7.10 Container.mergeItemStack treats getStack() == null as an empty slot.
-     * If the dummy slot looks empty, vanilla may call putStack(copy) and then set the
-     * source stack size to 0, causing the shifted item to disappear.
-     *
-     * So the dummy locked slot must look occupied and full.
+     * Do NOT return null from the dummy slot.
+     * Vanilla mergeItemStack treats null as an empty slot.
      */
-    private static final ItemStack DUMMY_LOCKED_STACK = new ItemStack(Blocks.bedrock, 64, 0);
+    @Unique
+    private static final ItemStack slotlock$dummyLockedStack;
+
+    static {
+        slotlock$dummyLockedStack = new ItemStack(Items.stick, 64);
+
+        NBTTagCompound tag = new NBTTagCompound();
+        tag.setBoolean("SlotLockDummy", true);
+        slotlock$dummyLockedStack.setTagCompound(tag);
+    }
 
     /**
      * Fake locked slot.
      *
-     * This slot is returned only inside Container.mergeItemStack when vanilla tries
-     * to access a locked player inventory slot.
-     *
-     * Behavior:
-     * 1. getStack() returns a full non-null stack, so vanilla does not treat it as empty.
-     * 2. Because the dummy stack is full, vanilla will not merge into it.
-     * 3. isItemValid() returns false.
-     * 4. putStack() does nothing, just in case.
+     * It looks occupied and full, so vanilla mergeItemStack will skip it.
      */
-    private static final Slot DUMMY_LOCKED_SLOT = new Slot(new InventoryBasic("slotlock_dummy", false, 1), 0, 0, 0) {
+    @Unique
+    private static final Slot slotlock$dummyLockedSlot = new Slot(
+        new InventoryBasic("slotlock_dummy", false, 1),
+        0,
+        0,
+        0) {
 
         @Override
         public boolean isItemValid(ItemStack stack) {
@@ -52,7 +55,7 @@ public abstract class MixinContainer {
 
         @Override
         public ItemStack getStack() {
-            return DUMMY_LOCKED_STACK.copy();
+            return slotlock$dummyLockedStack.copy();
         }
 
         @Override
@@ -79,9 +82,6 @@ public abstract class MixinContainer {
      *
      * If vanilla tries to access a locked player inventory slot while shift-clicking,
      * return the dummy slot instead.
-     *
-     * This lets vanilla keep its original mergeItemStack logic, but makes locked slots
-     * look like unusable full slots.
      */
     @Redirect(
         method = "mergeItemStack",
@@ -89,15 +89,16 @@ public abstract class MixinContainer {
     private Object slotlock$redirectSlotGet(List<?> list, int index) {
         Object obj = list.get(index);
 
-        if (obj instanceof Slot) {
-            Slot slot = (Slot) obj;
+        if (!(obj instanceof Slot)) {
+            return obj;
+        }
 
-            if (SlotLockManager.isLocked(slot)) {
-                return DUMMY_LOCKED_SLOT;
-            }
+        Slot slot = (Slot) obj;
+
+        if (SlotLockManager.isLocked(slot)) {
+            return slotlock$dummyLockedSlot;
         }
 
         return obj;
     }
-
 }

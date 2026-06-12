@@ -33,6 +33,9 @@ public class ClientProxy extends CommonProxy {
         FMLCommonHandler.instance()
             .bus()
             .register(handler);
+        FMLCommonHandler.instance()
+            .bus()
+            .register(new SlotLockAutoMover());
 
         MyMod.LOG.info("SlotLock overlay registered");
         MyMod.LOG.info("SlotLock client tick handler registered");
