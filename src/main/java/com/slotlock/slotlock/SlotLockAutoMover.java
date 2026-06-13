@@ -138,6 +138,8 @@ public class SlotLockAutoMover {
 
         pendingSourceSlotNumber = -1;
         pendingSourcePlayerIndex = -1;
+
+        SlotLockInternalBypass.clear();
     }
 
     /**
@@ -199,6 +201,8 @@ public class SlotLockAutoMover {
 
         pendingSourceSlotNumber = -1;
         pendingSourcePlayerIndex = -1;
+
+        SlotLockInternalBypass.clear();
     }
 
     /**
@@ -263,6 +267,11 @@ public class SlotLockAutoMover {
             return;
         }
 
+        /*
+         * AutoMover 自己需要临时允许点击这个锁定来源槽。
+         * 普通玩家点击 / NEI 模拟点击不会有这个 bypass。
+         */
+        SlotLockInternalBypass.allowPlayerIndex(pendingSourcePlayerIndex, 1000L);
         mc.playerController.windowClick(pendingWindowId, pendingSourceSlotNumber, 0, 0, player);
     }
 
@@ -313,8 +322,19 @@ public class SlotLockAutoMover {
         /*
          * 第一步：
          * 左键拿起锁定槽里的物品。
+         * 现在 MixinContainer 会拦截锁定槽的普通左键，
+         * 所以 AutoMover 自己要临时 bypass。
          */
+        SlotLockInternalBypass.allowPlayerIndex(lockedPlayerIndex, 1000L);
         mc.playerController.windowClick(container.windowId, fromSlot.slotNumber, 0, 0, player);
+
+        /*
+         * 如果没有成功拿起来，不进入 WAITING_TO_PLACE。
+         */
+        if (player.inventory.getItemStack() == null) {
+            SlotLockInternalBypass.clear();
+            return false;
+        }
 
         /*
          * 第二步：

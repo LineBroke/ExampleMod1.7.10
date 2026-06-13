@@ -9,8 +9,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.entity.player.InventoryPlayer;
@@ -24,11 +26,29 @@ public final class SlotLockManager {
     private static final Set<Integer> LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
     private static final Set<Integer> EMPTY_WHEN_LOCKED_PLAYER_SLOTS = new HashSet<Integer>();
 
+    /*
+     * Cache Slot -> player inventory index.
+     * This avoids doing expensive reflection every frame while rendering GUI slots.
+     * WeakHashMap is used because Slot objects are usually owned by Containers/GUI screens.
+     * When the GUI is closed, the Slot keys can be garbage-collected.
+     */
+    private static final Map<Slot, Integer> SLOT_INDEX_CACHE = Collections
+        .synchronizedMap(new WeakHashMap<Slot, Integer>());
+
     private static final long SAVE_DELAY_MS = 500L;
 
     private static File saveFile;
     private static boolean dirty = false;
     private static long dirtyTime = 0L;
+
+    private static boolean creativeSlotClassLookupDone = false;
+    private static Class<?> creativeSlotClass = null;
+
+    private static boolean modularUI2SlotItemHandlerLookupDone = false;
+    private static Class<?> modularUI2SlotItemHandlerClass = null;
+
+    private static boolean modularUI1SlotItemHandlerLookupDone = false;
+    private static Class<?> modularUI1SlotItemHandlerClass = null;
 
     private SlotLockManager() {}
 
@@ -49,6 +69,7 @@ public final class SlotLockManager {
     public static void load() {
         LOCKED_PLAYER_SLOTS.clear();
         EMPTY_WHEN_LOCKED_PLAYER_SLOTS.clear();
+        SLOT_INDEX_CACHE.clear();
 
         if (saveFile == null) {
             File configDir = new File(
@@ -186,7 +207,7 @@ public final class SlotLockManager {
         }
     }
 
-    private static void markDirty() {
+    public static void markDirty() {
         dirty = true;
         dirtyTime = System.currentTimeMillis();
     }
@@ -219,8 +240,52 @@ public final class SlotLockManager {
     }
 
     public static int getPlayerSlotIndex(Slot slot) {
+        if (slot == null) {
+            return -1;
+        }
+
+        /*
+         * First cache lookup uses the original Slot object.
+         * This avoids calling unwrapSlot() every frame.
+         */
+        Integer cached = SLOT_INDEX_CACHE.get(slot);
+
+        if (cached != null) {
+            return cached.intValue();
+        }
+
         Slot realSlot = unwrapSlot(slot);
 
+        if (realSlot == null) {
+            SLOT_INDEX_CACHE.put(slot, Integer.valueOf(-1));
+            return -1;
+        }
+
+        /*
+         * CreativeSlot wraps another real Slot.
+         * If the inner slot is already cached, reuse it and also cache the wrapper.
+         */
+        if (realSlot != slot) {
+            cached = SLOT_INDEX_CACHE.get(realSlot);
+
+            if (cached != null) {
+                SLOT_INDEX_CACHE.put(slot, cached);
+                return cached.intValue();
+            }
+        }
+
+        int result = resolvePlayerSlotIndexUncached(realSlot);
+
+        SLOT_INDEX_CACHE.put(slot, Integer.valueOf(result));
+
+        if (realSlot != slot) {
+            SLOT_INDEX_CACHE.put(realSlot, Integer.valueOf(result));
+        }
+
+        return result;
+    }
+
+    private static int resolvePlayerSlotIndexUncached(Slot realSlot) {
         if (realSlot == null) {
             return -1;
         }
@@ -331,11 +396,10 @@ public final class SlotLockManager {
          * Creative inventory wraps real Slot in GuiContainerCreative.CreativeSlot.
          */
         try {
-            Class<?> creativeSlotClass = Class
-                .forName("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot");
+            Class<?> clazz = getCreativeSlotClass();
 
-            if (creativeSlotClass.isInstance(slot)) {
-                Field field = creativeSlotClass.getDeclaredField("slot");
+            if (clazz != null && clazz.isInstance(slot)) {
+                Field field = clazz.getDeclaredField("slot");
                 field.setAccessible(true);
 
                 Object inner = field.get(slot);
@@ -349,23 +413,29 @@ public final class SlotLockManager {
         return slot;
     }
 
+    private static Class<?> getCreativeSlotClass() {
+        if (creativeSlotClassLookupDone) {
+            return creativeSlotClass;
+        }
+
+        creativeSlotClassLookupDone = true;
+
+        try {
+            creativeSlotClass = Class.forName("net.minecraft.client.gui.inventory.GuiContainerCreative$CreativeSlot");
+        } catch (Throwable ignored) {
+            creativeSlotClass = null;
+        }
+
+        return creativeSlotClass;
+    }
+
     private static int getModularUIPlayerSlotIndex(Slot slot) {
-        /*
-         * ModularUI2 / Cleanroom ModularUI:
-         * com.cleanroommc.modularui.widgets.slot.ModularSlot
-         * extends com.cleanroommc.modularui.utils.item.SlotItemHandler.
-         * Its Slot.inventory is usually dummy InventoryBasic, so we must inspect itemHandler.
-         */
         int modularUI2Index = getModularUI2PlayerSlotIndex(slot);
 
         if (modularUI2Index >= 0 && modularUI2Index <= 35) {
             return modularUI2Index;
         }
 
-        /*
-         * Old ModularUI1:
-         * com.gtnewhorizons.modularui.api.forge.SlotItemHandler
-         */
         int modularUI1Index = getModularUI1PlayerSlotIndex(slot);
 
         if (modularUI1Index >= 0 && modularUI1Index <= 35) {
@@ -377,9 +447,9 @@ public final class SlotLockManager {
 
     private static int getModularUI2PlayerSlotIndex(Slot slot) {
         try {
-            Class<?> slotItemHandlerClass = Class.forName("com.cleanroommc.modularui.utils.item.SlotItemHandler");
+            Class<?> slotItemHandlerClass = getModularUI2SlotItemHandlerClass();
 
-            if (!slotItemHandlerClass.isInstance(slot)) {
+            if (slotItemHandlerClass == null || !slotItemHandlerClass.isInstance(slot)) {
                 return -1;
             }
 
@@ -478,11 +548,27 @@ public final class SlotLockManager {
         return -1;
     }
 
+    private static Class<?> getModularUI2SlotItemHandlerClass() {
+        if (modularUI2SlotItemHandlerLookupDone) {
+            return modularUI2SlotItemHandlerClass;
+        }
+
+        modularUI2SlotItemHandlerLookupDone = true;
+
+        try {
+            modularUI2SlotItemHandlerClass = Class.forName("com.cleanroommc.modularui.utils.item.SlotItemHandler");
+        } catch (Throwable ignored) {
+            modularUI2SlotItemHandlerClass = null;
+        }
+
+        return modularUI2SlotItemHandlerClass;
+    }
+
     private static int getModularUI1PlayerSlotIndex(Slot slot) {
         try {
-            Class<?> slotItemHandlerClass = Class.forName("com.gtnewhorizons.modularui.api.forge.SlotItemHandler");
+            Class<?> slotItemHandlerClass = getModularUI1SlotItemHandlerClass();
 
-            if (!slotItemHandlerClass.isInstance(slot)) {
+            if (slotItemHandlerClass == null || !slotItemHandlerClass.isInstance(slot)) {
                 return -1;
             }
 
@@ -583,6 +669,22 @@ public final class SlotLockManager {
         } catch (Throwable ignored) {}
 
         return -1;
+    }
+
+    private static Class<?> getModularUI1SlotItemHandlerClass() {
+        if (modularUI1SlotItemHandlerLookupDone) {
+            return modularUI1SlotItemHandlerClass;
+        }
+
+        modularUI1SlotItemHandlerLookupDone = true;
+
+        try {
+            modularUI1SlotItemHandlerClass = Class.forName("com.gtnewhorizons.modularui.api.forge.SlotItemHandler");
+        } catch (Throwable ignored) {
+            modularUI1SlotItemHandlerClass = null;
+        }
+
+        return modularUI1SlotItemHandlerClass;
     }
 
     private static Object tryGetSourceInventory(Object handler) {

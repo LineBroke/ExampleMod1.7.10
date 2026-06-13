@@ -11,7 +11,6 @@ import cpw.mods.fml.common.event.FMLPreInitializationEvent;
 
 public class ClientProxy extends CommonProxy {
 
-    // 定义一个全局可见的 KeyBinding
     public static KeyBinding lockKey;
 
     @Override
@@ -20,24 +19,42 @@ public class ClientProxy extends CommonProxy {
 
         super.preInit(event);
 
-        // 注册按键：
-        // 参数1: translation key (用于在语言文件里配置显示名称)
-        // 参数2: 默认按键 (左 Ctrl)
-        // 参数3: 分类名称 (在游戏控制菜单里单独列出一块)
+        /*
+         * Register key binding.
+         * Default key: Left Ctrl
+         */
         lockKey = new KeyBinding("key.slotlock.toggle", Keyboard.KEY_LCONTROL, "key.categories.slotlock");
+
         ClientRegistry.registerKeyBinding(lockKey);
 
-        SlotLockOverlayHandler handler = new SlotLockOverlayHandler();
+        /*
+         * Overlay render handler.
+         */
+        SlotLockOverlayHandler overlayHandler = new SlotLockOverlayHandler();
 
-        MinecraftForge.EVENT_BUS.register(handler);
+        MinecraftForge.EVENT_BUS.register(overlayHandler);
         FMLCommonHandler.instance()
             .bus()
-            .register(handler);
+            .register(overlayHandler);
+
+        /*
+         * Auto mover.
+         */
         FMLCommonHandler.instance()
             .bus()
             .register(new SlotLockAutoMover());
 
+        /*
+         * Debug tool.
+         * F9 = dump current container
+         * F10 = toggle watch mode
+         */
+        FMLCommonHandler.instance()
+            .bus()
+            .register(SlotLockDebugClientHandler.instance());
+
         MyMod.LOG.info("SlotLock overlay registered");
         MyMod.LOG.info("SlotLock client tick handler registered");
+        MyMod.LOG.info("SlotLock debug handler registered");
     }
 }
